@@ -25,7 +25,12 @@ def render() -> None:
                 submitted = st.form_submit_button("Criar parceiro", type="primary")
                 if submitted:
                     try:
-                        controller.create_partner(name=name, city=city, state=state, active=active)
+                        controller.create_partner(
+                            name=name,
+                            city=city,
+                            state=state,
+                            active=active,
+                        )
                         session.commit()
                         st.success("Parceiro criado com coordenadas automaticas.")
                         st.rerun()
@@ -72,7 +77,11 @@ def _render_partner_update_form(controller, session, partner) -> None:
         if save:
             try:
                 controller.update_partner(
-                    partner.id, name=name, city=city, state=state, active=active
+                    partner.id,
+                    name=name,
+                    city=city,
+                    state=state,
+                    active=active,
                 )
                 session.commit()
                 st.success("Parceiro atualizado.")

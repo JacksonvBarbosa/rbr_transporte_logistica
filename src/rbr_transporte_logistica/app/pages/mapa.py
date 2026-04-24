@@ -25,7 +25,13 @@ def render() -> None:
         st.info("Cadastre parceiros para visualizar o mapa.")
         return
 
-    partner_labels = {partner.id: f"{partner.name} ({partner.city}/{partner.state})" for partner in partners}
+    simulation = st.session_state.get("last_simulation")
+    visible_partner_ids = set(simulation.get("valid_partner_ids", [])) if simulation else {partner.id for partner in partners}
+    filtered_partners = [partner for partner in partners if partner.id in visible_partner_ids]
+    if not filtered_partners:
+        filtered_partners = partners
+
+    partner_labels = {partner.id: f"{partner.name} ({partner.city}/{partner.state})" for partner in filtered_partners}
     valid_partner_ids = list(partner_labels.keys())
     sanitized_default = [
         partner_id
@@ -41,15 +47,18 @@ def render() -> None:
     )
     st.session_state["selected_partner_ids"] = selected_partner_ids
 
-    all_points = [(partner.latitude, partner.longitude) for partner in partners]
+    all_points = [(partner.latitude, partner.longitude) for partner in filtered_partners]
     route = st.session_state.get("last_route")
     if route:
-        all_points.extend((point.latitude, point.longitude) for point in route["route_points"])
+        all_points.extend((point.latitude, point.longitude) for point in route["physical_path_points"])
 
     map_view = folium.Map(location=map_center(all_points), zoom_start=5, control_scale=True)
 
-    for partner in partners:
+    route_partner_ids = set(route.get("selected_partner_ids", [])) if route else set()
+    for partner in filtered_partners:
         color = "green" if partner.id in selected_partner_ids else "blue"
+        if partner.id in route_partner_ids:
+            color = "red" if route.get("manual_override") else "darkgreen"
         folium.Marker(
             location=[partner.latitude, partner.longitude],
             popup=f"{partner.name} | {partner.city}/{partner.state}",
@@ -58,13 +67,36 @@ def render() -> None:
         ).add_to(map_view)
 
     if route:
-        coordinates = [(point.latitude, point.longitude) for point in route["route_points"]]
-        folium.PolyLine(coordinates, color="red", weight=4, opacity=0.85).add_to(map_view)
-        for index, point in enumerate(route["route_points"], start=1):
+        legend_added = set()
+        for index, segment in enumerate(route.get("route_segments", []), start=1):
+            start = route["route_points"][0] if index == 1 else route["route_points"][index]
+            end = route["route_points"][index + 1]
+            coordinates = [(start.latitude, start.longitude)]
+            if segment.pickup_mode == "HUB":
+                partner_point = route["route_points"][index]
+                coordinates.append((partner_point.latitude, partner_point.longitude))
+            coordinates.append((end.latitude, end.longitude))
+            color = "#f59e0b" if segment.pickup_mode == "HUB" else "#2563eb"
+            tooltip = (
+                f"Trecho {index}: {segment.partner_name} | "
+                f"{segment.pickup_mode} | "
+                f"{segment.distance_km:,.2f} km | "
+                f"{segment.segment_days} dias"
+            )
+            folium.PolyLine(
+                coordinates,
+                color=color,
+                weight=5,
+                opacity=0.9,
+                tooltip=tooltip,
+            ).add_to(map_view)
+            if segment.pickup_mode not in legend_added:
+                legend_added.add(segment.pickup_mode)
+        for index, point in enumerate(route["physical_path_points"], start=1):
             folium.CircleMarker(
                 location=[point.latitude, point.longitude],
                 radius=6,
-                color="orange",
+                color="orange" if route.get("manual_override") else "crimson",
                 fill=True,
                 fill_opacity=0.8,
                 popup=f"#{index} {point.label} - {point.city}/{point.state}",

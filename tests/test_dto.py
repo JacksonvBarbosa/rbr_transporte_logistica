@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rbr_transporte_logistica.dto import RoutePoint, SimulationResult
+from rbr_transporte_logistica.dto import RoutePoint, RouteSegment, SimulationResult
 
 
 def test_simulation_result_to_dict_returns_plain_payload():
@@ -31,9 +31,21 @@ def test_simulation_result_to_dict_returns_plain_payload():
         latitude=-22.9099,
         longitude=-47.0626,
         distance_km=100.0,
-        segment_index=1,
-        origin_point=origin,
-        destination_point=destination,
+        route_segments=[
+            RouteSegment(
+                partner_id=1,
+                partner_name="Parceiro Azul",
+                origin=(origin.latitude, origin.longitude),
+                destination=(destination.latitude, destination.longitude),
+                distance_km=100.0,
+                pickup_mode="DIRECT",
+                segment_days=2,
+                segment_cost=150.0,
+                rule_type="FIXED",
+            )
+        ],
+        total_days=2,
+        total_cost=150.0,
     )
 
     assert result.to_dict() == {
@@ -47,23 +59,19 @@ def test_simulation_result_to_dict_returns_plain_payload():
         "latitude": -22.9099,
         "longitude": -47.0626,
         "distance_km": 100.0,
-        "segment_index": 1,
-        "origin_point": {
-            "label": "Origem",
-            "city": "Sao Paulo",
-            "state": "SP",
-            "latitude": -23.5505,
-            "longitude": -46.6333,
-            "partner_id": None,
-            "point_type": "endpoint",
-        },
-        "destination_point": {
-            "label": "Destino",
-            "city": "Campinas",
-            "state": "SP",
-            "latitude": -22.9099,
-            "longitude": -47.0626,
-            "partner_id": None,
-            "point_type": "endpoint",
-        },
+        "route_segments": [
+            {
+                "partner_id": 1,
+                "partner_name": "Parceiro Azul",
+                "origin": (-23.5505, -46.6333),
+                "destination": (-22.9099, -47.0626),
+                "distance_km": 100.0,
+                "pickup_mode": "DIRECT",
+                "segment_days": 2,
+                "segment_cost": 150.0,
+                "rule_type": "FIXED",
+            }
+        ],
+        "total_days": 2,
+        "total_cost": 150.0,
     }

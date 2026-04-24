@@ -13,6 +13,9 @@ class FakeColumn:
     def metric(self, *_args, **_kwargs) -> None:
         return None
 
+    def selectbox(self, _label: str, options: list[str], index: int = 0, key: str | None = None) -> str:
+        return options[index]
+
 
 class FakeForm:
     def __enter__(self):
@@ -26,6 +29,7 @@ class FakeStreamlit:
     def __init__(self, session_state: dict, *, checkbox_value: bool = True) -> None:
         self.session_state = session_state
         self.multiselect_calls: list[dict] = []
+        self.selectbox_calls: list[dict] = []
         self.checkbox_value = checkbox_value
 
     def header(self, *_args, **_kwargs) -> None:
@@ -87,6 +91,10 @@ class FakeStreamlit:
     def checkbox(self, *_args, **_kwargs) -> bool:
         return self.checkbox_value
 
+    def selectbox(self, label: str, options: list[str], index: int = 0, key: str | None = None):
+        self.selectbox_calls.append({"label": label, "options": options, "index": index, "key": key})
+        return options[index]
+
 
 class FakePartnerController:
     def __init__(self, partners: list[SimpleNamespace]) -> None:
@@ -112,6 +120,7 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
         session_state={
             "last_simulation": {
                 "distance_km": 100.0,
+                "valid_partner_ids": [1, 3],
                 "results": [
                     SimpleNamespace(
                         partner_id=1,
@@ -121,6 +130,7 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
                         distance_km=100.0,
                         price=150.0,
                         deadline_days=2,
+                        route_segments=[],
                         rule_type="FIXED",
                     )
                 ],
@@ -142,7 +152,9 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
                     SimpleNamespace(label="Partner C", city="Curitiba", state="PR"),
                     SimpleNamespace(label="Destino", city="Campinas", state="SP"),
                 ],
-                "segments": [],
+                "selected_partner_ids": [3],
+                "route_segments": [],
+                "segment_pickup_modes": ["DIRECT"],
                 "manual_override": False,
             },
             "selected_partner_ids": [999, 3],
@@ -165,3 +177,4 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
             "formatted": ["Parceiro A (Campinas/SP)", "Parceiro C (Curitiba/PR)"],
         }
     ]
+    assert st.session_state["selected_segment_pickup_modes"] == ["DIRECT"]

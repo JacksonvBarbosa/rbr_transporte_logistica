@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from rbr_transporte_logistica.dto.route import RouteSegment
+
 
 @dataclass(slots=True)
 class SimulationResult:
@@ -15,9 +17,9 @@ class SimulationResult:
     latitude: float | None
     longitude: float | None
     distance_km: float
-    segment_index: int | None = None
-    origin_point: "RoutePoint | None" = None
-    destination_point: "RoutePoint | None" = None
+    route_segments: list[RouteSegment]
+    total_days: int | None = None
+    total_cost: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -49,6 +51,11 @@ class SegmentResult:
     price: float
     deadline_days: int
     rule_type: str
+    segment_distance_km: float
+    segment_days: int
+    pickup_mode: str
+    total_cost: float
+    total_days: int
 
 
 @dataclass(slots=True)

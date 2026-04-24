@@ -25,9 +25,15 @@ class FreightController:
         destination_city: str,
         destination_state: str,
         partner_ids: list[int] | None = None,
+        segment_pickup_modes: list[str] | None = None,
     ) -> dict:
         return self.freight_service.simulate_multi_leg(
-            origin_city, origin_state, destination_city, destination_state, partner_ids
+            origin_city,
+            origin_state,
+            destination_city,
+            destination_state,
+            partner_ids,
+            segment_pickup_modes,
         )
 
     def ingest_file(self, filename: str, file_bytes: bytes):

@@ -5,6 +5,7 @@ import streamlit as st
 
 from rbr_transporte_logistica.app.dependencies import build_freight_controller, build_partner_controller
 from rbr_transporte_logistica.core.database import db_session
+from rbr_transporte_logistica.services.route_builder import default_segment_pickup_modes
 
 
 def render() -> None:
@@ -36,18 +37,13 @@ def render() -> None:
                     st.session_state["last_simulation"] = result
                     st.session_state.pop("last_route", None)
                     st.session_state.pop("last_quote", None)
-                    default_partner_ids = (
-                        [result["best_price"].partner_id] if result.get("best_price") else []
-                    )
-                    st.session_state["selected_partner_ids"] = default_partner_ids
-                    route = freight_controller.simulate_multi_leg(
-                        origin_city=result["origin"].city,
-                        origin_state=result["origin"].state,
-                        destination_city=result["destination"].city,
-                        destination_state=result["destination"].state,
-                    )
-                    st.session_state["last_route"] = route
-                    st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
+                    st.session_state["selected_partner_ids"] = result.get("valid_partner_ids", [])
+                    if result.get("suggested_route"):
+                        st.session_state["last_route"] = result["suggested_route"]
+                        st.session_state["selected_partner_ids"] = result["suggested_route"]["selected_partner_ids"]
+                        st.session_state["selected_segment_pickup_modes"] = result["suggested_route"][
+                            "segment_pickup_modes"
+                        ]
                 except ValueError as exc:
                     st.error(str(exc))
                     return
@@ -58,8 +54,8 @@ def render() -> None:
         return
 
     st.metric("Distancia direta", f"{simulation['distance_km']:,.2f} km")
-    if not simulation["results"]:
-        st.warning("Nenhum parceiro ativo possui regra para essa rota.")
+    if not simulation["results"] and not simulation.get("suggested_route"):
+        st.warning("Nenhuma rota valida foi encontrada para esse trajeto.")
         return
 
     comparison_df = pd.DataFrame(
@@ -78,15 +74,23 @@ def render() -> None:
         ]
     )
     st.subheader("Comparativo de parceiros")
-    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+    if not comparison_df.empty:
+        st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum parceiro consegue finalizar a rota sozinho, mas a malha valida foi analisada.")
 
     best_price = simulation["best_price"]
     best_deadline = simulation["best_deadline"]
-    metric_col1, metric_col2 = st.columns(2)
-    metric_col1.metric("Melhor preco", f"R$ {best_price.price:,.2f}", best_price.partner_name)
-    metric_col2.metric(
-        "Melhor prazo", f"{best_deadline.deadline_days} dias", best_deadline.partner_name
-    )
+    if best_price and best_deadline:
+        metric_col1, metric_col2 = st.columns(2)
+        metric_col1.metric("Melhor preco", f"R$ {best_price.price:,.2f}", best_price.partner_name)
+        metric_col2.metric(
+            "Melhor prazo", f"{best_deadline.deadline_days} dias", best_deadline.partner_name
+        )
+
+    valid_partner_ids = simulation.get("valid_partner_ids", [])
+    if valid_partner_ids:
+        st.caption(f"Parceiros validos para a rota atual: {len(valid_partner_ids)}")
 
     route = st.session_state.get("last_route")
     if route:
@@ -107,16 +111,22 @@ def render() -> None:
         segments_df = pd.DataFrame(
             [
                 {
-                    "ordem": segment.segment_order,
+                    "ordem": index,
                     "partner": segment.partner_name,
-                    "origem": segment.origin_label,
-                    "destino": segment.destination_label,
+                    "origem": route["route_points"][0].label if index == 1 else route["route_points"][index].label,
+                    "destino": route["route_points"][index + 1].label,
                     "distance_km": segment.distance_km,
-                    "price": segment.price,
-                    "deadline_days": segment.deadline_days,
+                    "price": segment.segment_cost,
+                    "segment_days": segment.segment_days,
+                    "pickup_mode": segment.pickup_mode,
+                    "total_cost": round(
+                        sum(item.segment_cost for item in route["route_segments"][:index]),
+                        2,
+                    ),
+                    "total_days": sum(item.segment_days for item in route["route_segments"][:index]),
                     "rule_type": segment.rule_type,
                 }
-                for segment in route["segments"]
+                for index, segment in enumerate(route["route_segments"], start=1)
             ]
         )
         st.dataframe(segments_df, use_container_width=True, hide_index=True)
@@ -128,8 +138,14 @@ def render() -> None:
         value=False,
     )
     if use_manual_override:
+        valid_partner_lookup = {
+            partner.id: partner
+            for partner in active_partners
+            if partner.id in valid_partner_ids
+        }
         partner_labels = {
-            partner.id: f"{partner.name} ({partner.city}/{partner.state})" for partner in active_partners
+            partner.id: f"{partner.name} ({partner.city}/{partner.state})"
+            for partner in valid_partner_lookup.values()
         }
         valid_partner_ids = list(partner_labels.keys())
         sanitized_default = [
@@ -145,6 +161,22 @@ def render() -> None:
             format_func=lambda partner_id: partner_labels[partner_id],
         )
         st.session_state["selected_partner_ids"] = selected_partner_ids
+        default_pickup_modes = default_segment_pickup_modes(len(selected_partner_ids))
+        stored_pickup_modes = st.session_state.get("selected_segment_pickup_modes", [])
+        if len(stored_pickup_modes) != len(selected_partner_ids):
+            stored_pickup_modes = default_pickup_modes
+        selected_segment_pickup_modes: list[str] = []
+        if selected_partner_ids:
+            st.caption("Defina o pickup mode por trecho.")
+        for index, partner_id in enumerate(selected_partner_ids):
+            mode = st.selectbox(
+                f"{partner_labels[partner_id]}",
+                options=["HUB", "DIRECT"],
+                index=["HUB", "DIRECT"].index(stored_pickup_modes[index]),
+                key=f"pickup_mode_segment_{index}_{partner_id}",
+            )
+            selected_segment_pickup_modes.append(mode)
+        st.session_state["selected_segment_pickup_modes"] = selected_segment_pickup_modes
 
         if st.button("Aplicar override manual", key="apply_manual_route_override"):
             try:
@@ -154,9 +186,11 @@ def render() -> None:
                     destination_city=simulation["destination"].city,
                     destination_state=simulation["destination"].state,
                     partner_ids=selected_partner_ids,
+                    segment_pickup_modes=selected_segment_pickup_modes,
                 )
                 st.session_state["last_route"] = route
                 st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
+                st.session_state["selected_segment_pickup_modes"] = route["segment_pickup_modes"]
                 st.success("Rota manual calculada com sucesso.")
                 st.rerun()
             except ValueError as exc:
@@ -172,6 +206,7 @@ def render() -> None:
                 )
                 st.session_state["last_route"] = route
                 st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
+                st.session_state["selected_segment_pickup_modes"] = route["segment_pickup_modes"]
                 st.success("Rota automatica recalculada com sucesso.")
                 st.rerun()
             except ValueError as exc:
