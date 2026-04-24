@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import BinaryIO
 
 from rbr_transporte_logistica.core.models import Partner
+from rbr_transporte_logistica.dto.etl import ETLResult
 from rbr_transporte_logistica.services.partner_service import PartnerService
 from rbr_transporte_logistica.utils.file_parser import ParsedFileRow, parse_uploaded_file
-
-
-@dataclass(slots=True)
-class ETLResult:
-    rows_processed: int
-    partners_created: int
-    rules_created: int
 
 
 class ETLService:
