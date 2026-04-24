@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v4
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Lint
+        run: |
+          poetry run black --check .
+          poetry run flake8 .
+
+      - name: Start PostgreSQL
+        uses: ikalnytskyi/action-setup-postgres@v6
+        with:
+          username: test_user
+          password: test_pass
+          database: transportadora_test
+          port: 5432
+        
+      - name: Test
+        env:
+          DATABASE_URL: postgresql+psycopg2://test_user:test_pass@localhost:5432/transportadora_test
+        run: poetry run pytest

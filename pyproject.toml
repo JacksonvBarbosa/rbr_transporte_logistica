@@ -1,0 +1,47 @@
+[tool.poetry]
+name = "frete-system"
+version = "0.1.0"
+description = "Production-ready logistics freight calculation system"
+authors = ["OpenAI Codex <codex@openai.com>"]
+readme = "README.md"
+
+packages = [
+    { include = "rbr_transporte_logistica", from = "src" }
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+sqlalchemy = "^2.0.39"
+alembic = "^1.15.2"
+psycopg = {extras = ["binary"], version = "^3.2.6"}
+pandas = "^2.2.3"
+openpyxl = "^3.1.5"
+pdfplumber = "^0.11.5"
+streamlit = "^1.44.1"
+folium = "^0.19.5"
+reportlab = "^4.3.1"
+python-dotenv = "^1.1.0"
+psycopg2 = "^2.9.12"
+geopy = "^2.4.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.5"
+pytest-cov = "^6.1.1"
+black = "^25.1.0"
+flake8 = "^7.1.2"
+psycopg2-binary = "^2.9.12"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.flake8]
+max-line-length = 100
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
