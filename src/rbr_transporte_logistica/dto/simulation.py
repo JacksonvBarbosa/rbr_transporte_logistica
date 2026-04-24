@@ -15,6 +15,9 @@ class SimulationResult:
     latitude: float | None
     longitude: float | None
     distance_km: float
+    segment_index: int | None = None
+    origin_point: "RoutePoint | None" = None
+    destination_point: "RoutePoint | None" = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -27,6 +30,8 @@ class RoutePoint:
     state: str
     latitude: float
     longitude: float
+    partner_id: int | None = None
+    point_type: str = "waypoint"
 
 
 @dataclass(slots=True)

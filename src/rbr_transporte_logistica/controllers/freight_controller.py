@@ -24,7 +24,7 @@ class FreightController:
         origin_state: str,
         destination_city: str,
         destination_state: str,
-        partner_ids: list[int],
+        partner_ids: list[int] | None = None,
     ) -> dict:
         return self.freight_service.simulate_multi_leg(
             origin_city, origin_state, destination_city, destination_state, partner_ids

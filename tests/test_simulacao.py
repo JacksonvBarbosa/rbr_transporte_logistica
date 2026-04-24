@@ -23,9 +23,10 @@ class FakeForm:
 
 
 class FakeStreamlit:
-    def __init__(self, session_state: dict) -> None:
+    def __init__(self, session_state: dict, *, checkbox_value: bool = True) -> None:
         self.session_state = session_state
         self.multiselect_calls: list[dict] = []
+        self.checkbox_value = checkbox_value
 
     def header(self, *_args, **_kwargs) -> None:
         return None
@@ -57,6 +58,15 @@ class FakeStreamlit:
     def info(self, *_args, **_kwargs) -> None:
         return None
 
+    def write(self, *_args, **_kwargs) -> None:
+        return None
+
+    def success(self, *_args, **_kwargs) -> None:
+        return None
+
+    def rerun(self) -> None:
+        return None
+
     def error(self, message: str) -> None:
         raise AssertionError(f"Erro inesperado na pagina: {message}")
 
@@ -73,6 +83,9 @@ class FakeStreamlit:
 
     def button(self, *_args, **_kwargs) -> bool:
         return False
+
+    def checkbox(self, *_args, **_kwargs) -> bool:
+        return self.checkbox_value
 
 
 class FakePartnerController:
@@ -119,6 +132,18 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
                 ),
                 "origin": SimpleNamespace(city="Sao Paulo", state="SP"),
                 "destination": SimpleNamespace(city="Campinas", state="SP"),
+            },
+            "last_route": {
+                "total_distance_km": 120.0,
+                "total_cost": 300.0,
+                "total_deadline_days": 2,
+                "route_points": [
+                    SimpleNamespace(label="Origem", city="Sao Paulo", state="SP"),
+                    SimpleNamespace(label="Partner C", city="Curitiba", state="PR"),
+                    SimpleNamespace(label="Destino", city="Campinas", state="SP"),
+                ],
+                "segments": [],
+                "manual_override": False,
             },
             "selected_partner_ids": [999, 3],
         }

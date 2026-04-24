@@ -26,10 +26,17 @@ def render() -> None:
         return
 
     partner_labels = {partner.id: f"{partner.name} ({partner.city}/{partner.state})" for partner in partners}
+    valid_partner_ids = list(partner_labels.keys())
+    sanitized_default = [
+        partner_id
+        for partner_id in st.session_state.get("selected_partner_ids", [])
+        if partner_id in valid_partner_ids
+    ]
+    st.session_state["selected_partner_ids"] = sanitized_default
     selected_partner_ids = st.multiselect(
         "Parceiros selecionados no mapa",
-        options=list(partner_labels.keys()),
-        default=st.session_state.get("selected_partner_ids", []),
+        options=valid_partner_ids,
+        default=sanitized_default,
         format_func=lambda partner_id: partner_labels[partner_id],
     )
     st.session_state["selected_partner_ids"] = selected_partner_ids
@@ -53,14 +60,14 @@ def render() -> None:
     if route:
         coordinates = [(point.latitude, point.longitude) for point in route["route_points"]]
         folium.PolyLine(coordinates, color="red", weight=4, opacity=0.85).add_to(map_view)
-        for point in route["route_points"]:
+        for index, point in enumerate(route["route_points"], start=1):
             folium.CircleMarker(
                 location=[point.latitude, point.longitude],
                 radius=6,
                 color="orange",
                 fill=True,
                 fill_opacity=0.8,
-                popup=f"{point.label} - {point.city}/{point.state}",
+                popup=f"#{index} {point.label} - {point.city}/{point.state}",
             ).add_to(map_view)
 
     components.html(map_view._repr_html_(), height=560)

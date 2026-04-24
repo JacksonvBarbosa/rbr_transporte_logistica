@@ -11,6 +11,7 @@ from rbr_transporte_logistica.dto.simulation import (
     SimulationResult,
 )
 from rbr_transporte_logistica.repositories.partner_repository import PartnerRepository
+from rbr_transporte_logistica.services.route_builder import build_route
 from rbr_transporte_logistica.utils.geo_utils import calculate_distance_km, get_coordinates
 
 
@@ -52,6 +53,8 @@ class FreightService:
                     latitude=partner.latitude,
                     longitude=partner.longitude,
                     distance_km=km,
+                    origin_point=origin,
+                    destination_point=destination,
                 )
             )
 
@@ -74,100 +77,21 @@ class FreightService:
         origin_state: str,
         destination_city: str,
         destination_state: str,
-        partner_ids: list[int],
+        partner_ids: list[int] | None = None,
     ) -> dict[str, Any]:
-        if not partner_ids:
-            raise ValueError("Selecione ao menos um parceiro para montar a rota.")
-
         origin = self._build_point("Origem", origin_city, origin_state)
         destination = self._build_point("Destino", destination_city, destination_state)
-        partners = self.partner_repository.get_by_ids(partner_ids)
-        if len(partners) != len(partner_ids):
-            raise ValueError("Um ou mais parceiros selecionados nao foram encontrados.")
-
-        # Valida coordenadas de todos os parceiros antes de montar a rota
-        partners_sem_coords = [
-            partner.name for partner in partners
-            if partner.latitude is None or partner.longitude is None
+        manual_override = partner_ids is not None
+        partners = self._load_route_partners(partner_ids)
+        route_points = self._build_route_points(origin, destination, partners, manual_override=manual_override)
+        segments = self._build_route_segments(route_points, partners)
+        total_cost = round(sum(segment.price for segment in segments), 2)
+        total_distance_km = round(sum(segment.distance_km for segment in segments), 2)
+        total_deadline_days = sum(segment.deadline_days for segment in segments)
+        selected_partner_ids = [
+            point.partner_id for point in route_points if point.partner_id is not None
         ]
-        if partners_sem_coords:
-            partner_list = ", ".join(partners_sem_coords)
-            raise ValueError(
-                f"Os seguintes parceiros nao possuem latitude/longitude e nao podem "
-                f"ser usados na rota: {partner_list}. "
-                f"Edite o parceiro e salve novamente para geocodificar automaticamente."
-            )
-
-        route_points = [origin] + [
-            RoutePoint(
-                label=partner.name,
-                city=partner.city,
-                state=partner.state,
-                latitude=float(partner.latitude),
-                longitude=float(partner.longitude),
-            )
-            for partner in partners
-        ] + [destination]
-
-        segments: list[SegmentResult] = []
-        for index, partner in enumerate(partners):
-            start = route_points[index]
-            end = route_points[index + 1]
-            distance_km = calculate_distance_km(
-                (start.latitude, start.longitude), (end.latitude, end.longitude)
-            )
-            rule = self._select_applicable_rule(partner, distance_km)
-            if not rule:
-                raise ValueError(
-                    f"O parceiro {partner.name} nao possui regra para o trecho de {distance_km} km."
-                )
-            segments.append(
-                SegmentResult(
-                    segment_order=index + 1,
-                    partner_id=partner.id,
-                    partner_name=partner.name,
-                    origin_label=start.label,
-                    destination_label=end.label,
-                    origin_city=start.city,
-                    origin_state=start.state,
-                    destination_city=end.city,
-                    destination_state=end.state,
-                    distance_km=distance_km,
-                    price=self.calculate_rule_price(rule, distance_km),
-                    deadline_days=rule.deadline_days,
-                    rule_type=rule.rule_type,
-                )
-            )
-
-        last_partner = partners[-1]
-        final_start = route_points[-2]
-        final_end = route_points[-1]
-        final_distance_km = calculate_distance_km(
-            (final_start.latitude, final_start.longitude),
-            (final_end.latitude, final_end.longitude),
-        )
-        final_rule = self._select_applicable_rule(last_partner, final_distance_km)
-        if not final_rule:
-            raise ValueError(
-                f"O parceiro {last_partner.name} nao possui regra para a entrega final de {final_distance_km} km."
-            )
-        segments.append(
-            SegmentResult(
-                segment_order=len(segments) + 1,
-                partner_id=last_partner.id,
-                partner_name=last_partner.name,
-                origin_label=final_start.label,
-                destination_label=final_end.label,
-                origin_city=final_start.city,
-                origin_state=final_start.state,
-                destination_city=final_end.city,
-                destination_state=final_end.state,
-                distance_km=final_distance_km,
-                price=self.calculate_rule_price(final_rule, final_distance_km),
-                deadline_days=final_rule.deadline_days,
-                rule_type=final_rule.rule_type,
-            )
-        )
+        partner_lookup = {partner.id: partner for partner in partners}
 
         return {
             "origin": origin,
@@ -175,9 +99,18 @@ class FreightService:
             "direct_distance_km": calculate_distance_km(
                 (origin.latitude, origin.longitude), (destination.latitude, destination.longitude)
             ),
-            "selected_partners": partners,
+            "selected_partners": [
+                partner_lookup[partner_id]
+                for partner_id in selected_partner_ids
+                if partner_id in partner_lookup
+            ],
+            "selected_partner_ids": selected_partner_ids,
             "segments": segments,
             "route_points": route_points,
+            "total_cost": total_cost,
+            "total_distance_km": total_distance_km,
+            "total_deadline_days": total_deadline_days,
+            "manual_override": manual_override,
         }
 
     def calculate_rule_price(self, rule: FreightRule, km: float) -> float:
@@ -236,6 +169,152 @@ class FreightService:
             total_deadline_days=total_deadline_days,
         )
 
+    def _load_route_partners(self, partner_ids: list[int] | None) -> list[Partner]:
+        if partner_ids is not None:
+            if not partner_ids:
+                raise ValueError("Selecione ao menos um parceiro para montar a rota manual.")
+            partners = self.partner_repository.get_by_ids(partner_ids)
+            if len(partners) != len(partner_ids):
+                raise ValueError("Um ou mais parceiros selecionados nao foram encontrados.")
+            return partners
+
+        partners = self.partner_repository.list_all(active_only=True)
+        if not partners:
+            raise ValueError("Nenhum parceiro ativo esta disponivel para montar a rota.")
+        return partners
+
+    def _build_route_points(
+        self,
+        origin: RoutePoint,
+        destination: RoutePoint,
+        partners: list[Partner],
+        *,
+        manual_override: bool,
+    ) -> list[RoutePoint]:
+        self._validate_partner_coordinates(partners)
+        if manual_override:
+            return self._build_manual_route_points(origin, destination, partners)
+
+        try:
+            return build_route(origin, destination, partners)
+        except ValueError as exc:
+            raise ValueError("No valid route found") from exc
+
+    def _build_manual_route_points(
+        self, origin: RoutePoint, destination: RoutePoint, partners: list[Partner]
+    ) -> list[RoutePoint]:
+        route_points = [origin]
+        for partner in partners:
+            max_distance = self._partner_max_distance(partner)
+            partner_point = RoutePoint(
+                label=partner.name,
+                city=partner.city,
+                state=partner.state,
+                latitude=float(partner.latitude),
+                longitude=float(partner.longitude),
+                partner_id=partner.id,
+                point_type="partner",
+            )
+            start = route_points[-1]
+            distance_to_partner = calculate_distance_km(
+                (start.latitude, start.longitude),
+                (partner_point.latitude, partner_point.longitude),
+            )
+            if distance_to_partner > max_distance:
+                raise ValueError(
+                    f"O parceiro {partner.name} nao consegue assumir o trecho de "
+                    f"{start.label} ate {partner_point.label}."
+                )
+            route_points.append(partner_point)
+
+        last_partner = partners[-1]
+        last_partner_distance = calculate_distance_km(
+            (route_points[-1].latitude, route_points[-1].longitude),
+            (destination.latitude, destination.longitude),
+        )
+        if last_partner_distance > self._partner_max_distance(last_partner):
+            raise ValueError(
+                f"O parceiro {last_partner.name} nao consegue finalizar a entrega para "
+                f"{destination.city}/{destination.state}."
+            )
+        route_points.append(destination)
+        return route_points
+
+    def _build_route_segments(
+        self, route_points: list[RoutePoint], partners: list[Partner]
+    ) -> list[SegmentResult]:
+        partner_lookup = {partner.id: partner for partner in partners}
+        segments: list[SegmentResult] = []
+
+        for index in range(1, len(route_points) - 1):
+            end = route_points[index]
+            partner = partner_lookup.get(end.partner_id)
+            if not partner:
+                raise ValueError(f"Parceiro da rota nao encontrado para o ponto {end.label}.")
+            start = route_points[index - 1]
+            segments.append(self._build_segment(index, partner, start, end))
+
+        last_partner_point = route_points[-2]
+        last_partner = partner_lookup.get(last_partner_point.partner_id)
+        if not last_partner:
+            raise ValueError("A rota precisa terminar em um parceiro valido antes do destino.")
+        segments.append(
+            self._build_segment(
+                len(segments) + 1,
+                last_partner,
+                last_partner_point,
+                route_points[-1],
+            )
+        )
+        return segments
+
+    def _build_segment(
+        self, segment_order: int, partner: Partner, start: RoutePoint, end: RoutePoint
+    ) -> SegmentResult:
+        distance_km = calculate_distance_km(
+            (start.latitude, start.longitude), (end.latitude, end.longitude)
+        )
+        rule = self._select_applicable_rule(partner, distance_km)
+        if not rule:
+            raise ValueError(
+                f"O parceiro {partner.name} nao possui regra para o trecho de {distance_km} km."
+            )
+        return SegmentResult(
+            segment_order=segment_order,
+            partner_id=partner.id,
+            partner_name=partner.name,
+            origin_label=start.label,
+            destination_label=end.label,
+            origin_city=start.city,
+            origin_state=start.state,
+            destination_city=end.city,
+            destination_state=end.state,
+            distance_km=distance_km,
+            price=self.calculate_rule_price(rule, distance_km),
+            deadline_days=rule.deadline_days,
+            rule_type=rule.rule_type,
+        )
+
+    @staticmethod
+    def _partner_max_distance(partner: Partner) -> float:
+        return max(
+            (float(rule.max_km) for rule in partner.freight_rules if rule.max_km is not None),
+            default=0.0,
+        )
+
+    @staticmethod
+    def _validate_partner_coordinates(partners: list[Partner]) -> None:
+        partners_sem_coords = [
+            partner.name for partner in partners if partner.latitude is None or partner.longitude is None
+        ]
+        if partners_sem_coords:
+            partner_list = ", ".join(partners_sem_coords)
+            raise ValueError(
+                f"Os seguintes parceiros nao possuem latitude/longitude e nao podem "
+                f"ser usados na rota: {partner_list}. "
+                f"Edite o parceiro e salve novamente para geocodificar automaticamente."
+            )
+
     @staticmethod
     def _select_applicable_rule(partner: Partner, km: float) -> FreightRule | None:
         if not partner.freight_rules:
@@ -285,4 +364,5 @@ class FreightService:
             state=state.strip().upper(),
             latitude=latitude,
             longitude=longitude,
+            point_type="endpoint",
         )

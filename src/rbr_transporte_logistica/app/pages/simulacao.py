@@ -9,7 +9,7 @@ from rbr_transporte_logistica.core.database import db_session
 
 def render() -> None:
     st.header("Simulacao de Frete")
-    st.caption("Compare parceiros automaticamente e monte uma rota multi-trecho com selecao ordenada.")
+    st.caption("Compare parceiros e gere uma rota multi-trecho automaticamente com override manual opcional.")
 
     with db_session() as session:
         freight_controller = build_freight_controller(session)
@@ -40,6 +40,14 @@ def render() -> None:
                         [result["best_price"].partner_id] if result.get("best_price") else []
                     )
                     st.session_state["selected_partner_ids"] = default_partner_ids
+                    route = freight_controller.simulate_multi_leg(
+                        origin_city=result["origin"].city,
+                        origin_state=result["origin"].state,
+                        destination_city=result["destination"].city,
+                        destination_state=result["destination"].state,
+                    )
+                    st.session_state["last_route"] = route
+                    st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
                 except ValueError as exc:
                     st.error(str(exc))
                     return
@@ -80,40 +88,21 @@ def render() -> None:
         "Melhor prazo", f"{best_deadline.deadline_days} dias", best_deadline.partner_name
     )
 
-    partner_labels = {
-        partner.id: f"{partner.name} ({partner.city}/{partner.state})" for partner in active_partners
-    }
-    valid_partner_ids = list(partner_labels.keys())
-    sanitized_default = [
-        partner_id
-        for partner_id in st.session_state.get("selected_partner_ids", [])
-        if partner_id in valid_partner_ids
-    ]
-    st.session_state["selected_partner_ids"] = sanitized_default
-    selected_partner_ids = st.multiselect(
-        "Parceiros da rota, em ordem",
-        options=valid_partner_ids,
-        default=sanitized_default,
-        format_func=lambda partner_id: partner_labels[partner_id],
-    )
-    st.session_state["selected_partner_ids"] = selected_partner_ids
-
-    if st.button("Montar rota multi-trecho"):
-        try:
-            route = freight_controller.simulate_multi_leg(
-                origin_city=simulation["origin"].city,
-                origin_state=simulation["origin"].state,
-                destination_city=simulation["destination"].city,
-                destination_state=simulation["destination"].state,
-                partner_ids=selected_partner_ids,
-            )
-            st.session_state["last_route"] = route
-            st.success("Rota multi-trecho calculada com sucesso.")
-        except ValueError as exc:
-            st.error(str(exc))
-
     route = st.session_state.get("last_route")
     if route:
+        summary_cols = st.columns(3)
+        summary_cols[0].metric("Distancia total da rota", f"{route['total_distance_km']:,.2f} km")
+        summary_cols[1].metric("Custo total da rota", f"R$ {route['total_cost']:,.2f}")
+        summary_cols[2].metric("Prazo total", f"{route['total_deadline_days']} dias")
+        route_points_labels = " -> ".join(
+            f"{point.label} ({point.city}/{point.state})" for point in route["route_points"]
+        )
+        st.write(f"Rota gerada: {route_points_labels}")
+        st.caption(
+            "Modo atual: "
+            + ("override manual" if route.get("manual_override") else "geracao automatica")
+        )
+
         st.subheader("Trechos calculados")
         segments_df = pd.DataFrame(
             [
@@ -131,3 +120,59 @@ def render() -> None:
             ]
         )
         st.dataframe(segments_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Override manual opcional")
+    use_manual_override = st.checkbox(
+        "Selecionar parceiros manualmente",
+        key="use_manual_route_override",
+        value=False,
+    )
+    if use_manual_override:
+        partner_labels = {
+            partner.id: f"{partner.name} ({partner.city}/{partner.state})" for partner in active_partners
+        }
+        valid_partner_ids = list(partner_labels.keys())
+        sanitized_default = [
+            partner_id
+            for partner_id in st.session_state.get("selected_partner_ids", [])
+            if partner_id in valid_partner_ids
+        ]
+        st.session_state["selected_partner_ids"] = sanitized_default
+        selected_partner_ids = st.multiselect(
+            "Parceiros da rota, em ordem",
+            options=valid_partner_ids,
+            default=sanitized_default,
+            format_func=lambda partner_id: partner_labels[partner_id],
+        )
+        st.session_state["selected_partner_ids"] = selected_partner_ids
+
+        if st.button("Aplicar override manual", key="apply_manual_route_override"):
+            try:
+                route = freight_controller.simulate_multi_leg(
+                    origin_city=simulation["origin"].city,
+                    origin_state=simulation["origin"].state,
+                    destination_city=simulation["destination"].city,
+                    destination_state=simulation["destination"].state,
+                    partner_ids=selected_partner_ids,
+                )
+                st.session_state["last_route"] = route
+                st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
+                st.success("Rota manual calculada com sucesso.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+    else:
+        if st.button("Recalcular rota automatica", key="rebuild_auto_route"):
+            try:
+                route = freight_controller.simulate_multi_leg(
+                    origin_city=simulation["origin"].city,
+                    origin_state=simulation["origin"].state,
+                    destination_city=simulation["destination"].city,
+                    destination_state=simulation["destination"].state,
+                )
+                st.session_state["last_route"] = route
+                st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
+                st.success("Rota automatica recalculada com sucesso.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
