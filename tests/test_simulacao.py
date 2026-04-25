@@ -26,11 +26,21 @@ class FakeForm:
 
 
 class FakeStreamlit:
-    def __init__(self, session_state: dict, *, checkbox_value: bool = True) -> None:
+    def __init__(
+        self,
+        session_state: dict,
+        *,
+        checkbox_value: bool = True,
+        submit_value: bool = False,
+        clicked_buttons: set[str] | None = None,
+    ) -> None:
         self.session_state = session_state
         self.multiselect_calls: list[dict] = []
         self.selectbox_calls: list[dict] = []
+        self.error_messages: list[str] = []
         self.checkbox_value = checkbox_value
+        self.submit_value = submit_value
+        self.clicked_buttons = clicked_buttons or set()
 
     def header(self, *_args, **_kwargs) -> None:
         return None
@@ -45,7 +55,7 @@ class FakeStreamlit:
         return [FakeColumn() for _ in range(count)]
 
     def form_submit_button(self, *_args, **_kwargs) -> bool:
-        return False
+        return self.submit_value
 
     def metric(self, *_args, **_kwargs) -> None:
         return None
@@ -72,7 +82,7 @@ class FakeStreamlit:
         return None
 
     def error(self, message: str) -> None:
-        raise AssertionError(f"Erro inesperado na pagina: {message}")
+        self.error_messages.append(message)
 
     def multiselect(self, label: str, options: list[int], default: list[int], format_func):
         self.multiselect_calls.append(
@@ -86,7 +96,8 @@ class FakeStreamlit:
         return default
 
     def button(self, *_args, **_kwargs) -> bool:
-        return False
+        key = _kwargs.get("key")
+        return key in self.clicked_buttons
 
     def checkbox(self, *_args, **_kwargs) -> bool:
         return self.checkbox_value
@@ -109,6 +120,9 @@ class FakePartnerController:
 class FakeFreightController:
     def simulate_multi_leg(self, **_kwargs):
         raise AssertionError("simulate_multi_leg nao deveria ser chamado neste teste")
+
+    def simulate(self, **_kwargs):
+        raise AssertionError("simulate nao deveria ser chamado neste teste")
 
 
 def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
@@ -178,3 +192,26 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
         }
     ]
     assert st.session_state["selected_segment_pickup_modes"] == ["DIRECT"]
+
+
+def test_render_shows_route_error_and_clears_last_route(monkeypatch):
+    partners = [SimpleNamespace(id=1, name="Parceiro A", city="Campinas", state="SP", active=True)]
+
+    class FailingFreightController(FakeFreightController):
+        def simulate(self, **_kwargs):
+            raise ValueError("No valid route found")
+
+    st = FakeStreamlit(
+        session_state={"last_route": {"selected_partner_ids": [1]}},
+        submit_value=True,
+    )
+
+    monkeypatch.setattr(simulacao, "st", st)
+    monkeypatch.setattr(simulacao, "db_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(simulacao, "build_partner_controller", lambda _session: FakePartnerController(partners))
+    monkeypatch.setattr(simulacao, "build_freight_controller", lambda _session: FailingFreightController())
+
+    simulacao.render()
+
+    assert st.error_messages == ["No valid route found"]
+    assert "last_route" not in st.session_state

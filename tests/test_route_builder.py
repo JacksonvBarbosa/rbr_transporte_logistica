@@ -152,3 +152,36 @@ def test_build_route_raises_when_route_is_impossible(monkeypatch):
 
     with pytest.raises(ValueError, match="No valid route found"):
         route_builder.build_route(origin, destination, [partner_a])
+
+
+def test_build_route_raises_when_distance_is_invalid(monkeypatch):
+    origin = RoutePoint("Origem", "Guarulhos", "SP", 0.0, 0.0, point_type="endpoint")
+    destination = RoutePoint("Destino", "Santos", "SP", 10.0, 10.0, point_type="endpoint")
+    partner_a = _partner(1, "Partner A", 1.0, 1.0, 100.0)
+
+    monkeypatch.setattr(route_builder, "calculate_distance_km", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ValueError, match="Distancia invalida calculada"):
+        route_builder.build_route(origin, destination, [partner_a])
+
+
+def test_build_route_raises_when_safe_limit_is_exceeded(monkeypatch):
+    origin = RoutePoint("Origem", "Guarulhos", "SP", 0.0, 0.0, point_type="endpoint")
+    destination = RoutePoint("Destino", "Salvador", "BA", 100.0, 100.0, point_type="endpoint")
+    partners = [_partner(index, f"Partner {index}", float(index), float(index), 50.0) for index in range(1, 12)]
+
+    distance_map: dict[tuple[tuple[float, float], tuple[float, float]], float] = {
+        ((0.0, 0.0), (100.0, 100.0)): 999.0,
+    }
+    for index in range(1, 12):
+        current = (float(index), float(index))
+        distance_map[((0.0, 0.0), current)] = float(index * 20)
+        distance_map[(current, (100.0, 100.0))] = 500.0 if index < 11 else 40.0
+        if index < 11:
+            next_point = (float(index + 1), float(index + 1))
+            distance_map[(current, next_point)] = 20.0
+
+    monkeypatch.setattr(route_builder, "calculate_distance_km", _distance_fn(distance_map))
+
+    with pytest.raises(ValueError, match="Route calculation exceeded safe limits"):
+        route_builder.build_route(origin, destination, partners)

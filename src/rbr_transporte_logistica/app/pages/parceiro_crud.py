@@ -6,6 +6,7 @@ import streamlit as st
 
 from rbr_transporte_logistica.app.dependencies import build_partner_controller
 from rbr_transporte_logistica.core.database import db_session
+from rbr_transporte_logistica.services.partner_service import PartnerService
 
 
 def render() -> None:
@@ -143,20 +144,11 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
     existing_rule_type = rule.rule_type if rule else "LINEAR"
     existing_config = rule.extra_config or {} if rule else {}
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     rule_type = col1.selectbox("Tipo de regra", ["LINEAR", "FIXED", "TIERED"], key=f"type_{prefix}", index=["LINEAR", "FIXED", "TIERED"].index(existing_rule_type))
-    deadline_days = int(
-        col2.number_input(
-            "Prazo (dias)",
-            min_value=1,
-            value=int(rule.deadline_days if rule else 3),
-            step=1,
-            key=f"deadline_{prefix}",
-        )
-    )
     max_km_default = float(rule.max_km if rule else 300.0)
     max_km = float(
-        col3.number_input(
+        col2.number_input(
             "Cobertura maxima (km)",
             min_value=1.0,
             value=max_km_default,
@@ -164,6 +156,8 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
             key=f"max_km_{prefix}",
         )
     )
+    auto_deadline_days = PartnerService._calculate_rule_deadline_days(max_km)
+    st.caption(f"Prazo calculado automaticamente: {auto_deadline_days} dias")
 
     if rule_type == "LINEAR":
         linear_cols = st.columns(2)
@@ -187,7 +181,6 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
         )
         return {
             "rule_type": "LINEAR",
-            "deadline_days": deadline_days,
             "base_price": base_price,
             "price_per_km": price_per_km,
             "max_km": max_km,
@@ -206,7 +199,6 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
         )
         return {
             "rule_type": "FIXED",
-            "deadline_days": deadline_days,
             "base_price": 0.0,
             "price_per_km": 0.0,
             "max_km": max_km,
@@ -253,7 +245,6 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
 
     return {
         "rule_type": "TIERED",
-        "deadline_days": deadline_days,
         "base_price": 0.0,
         "price_per_km": 0.0,
         "max_km": max_km,

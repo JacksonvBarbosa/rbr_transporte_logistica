@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import isfinite
+from time import monotonic
 from collections.abc import Callable, Iterable
 
 from rbr_transporte_logistica.core.models import Partner
@@ -8,6 +10,8 @@ from rbr_transporte_logistica.utils.geo_utils import calculate_distance_km
 
 RouteScorer = Callable[[list[RoutePoint]], tuple[float, int]]
 VALID_PICKUP_MODES = {"DIRECT", "HUB"}
+MAX_STEPS = 10
+MAX_ROUTE_SECONDS = 5.0
 
 
 def build_route(
@@ -39,14 +43,19 @@ def build_candidate_routes(
 
     routes: list[list[Partner]] = []
     for partner in partner_candidates:
-        routes.extend(
-            _enumerate_sequences(
-                current_handler=partner,
-                current_start=origin,
-                destination=destination,
-                remaining_partners=[item for item in partner_candidates if item.id != partner.id],
+        try:
+            routes.append(
+                _build_greedy_sequence(
+                    origin=origin,
+                    destination=destination,
+                    partners=partner_candidates,
+                    starting_partner=partner,
+                )
             )
-        )
+        except ValueError as exc:
+            if str(exc).strip() != "No valid route found":
+                raise
+            continue
 
     unique_routes: list[list[RoutePoint]] = []
     seen_route_ids: set[tuple[int, ...]] = set()
@@ -91,13 +100,13 @@ def calculate_effective_distance(
     end: RoutePoint,
     pickup_mode: str,
 ) -> float:
-    end_distance = calculate_distance_km((start.latitude, start.longitude), (end.latitude, end.longitude))
+    end_distance = _distance_between_points(start, end)
     if normalize_pickup_mode(pickup_mode) == "DIRECT":
         return end_distance
 
     base_point = _partner_to_point(partner)
-    to_base = calculate_distance_km((start.latitude, start.longitude), (base_point.latitude, base_point.longitude))
-    from_base = calculate_distance_km((base_point.latitude, base_point.longitude), (end.latitude, end.longitude))
+    to_base = _distance_between_points(start, base_point)
+    from_base = _distance_between_points(base_point, end)
     return to_base + from_base
 
 
@@ -128,31 +137,56 @@ def build_physical_path(
     return path
 
 
-def _enumerate_sequences(
+def _build_greedy_sequence(
     *,
-    current_handler: Partner,
-    current_start: RoutePoint,
+    origin: RoutePoint,
     destination: RoutePoint,
-    remaining_partners: list[Partner],
-) -> list[list[Partner]]:
-    sequences: list[list[Partner]] = []
-    if can_partner_deliver(current_handler, current_start, destination, pickup_mode="DIRECT"):
-        sequences.append([current_handler])
+    partners: list[Partner],
+    starting_partner: Partner,
+) -> list[Partner]:
+    route: list[Partner] = []
+    visited: set[int] = set()
+    current_point = origin
+    current_partner = starting_partner
+    started_at = monotonic()
 
-    for next_handler in remaining_partners:
-        next_start = _partner_to_point(next_handler)
-        if not can_partner_deliver(current_handler, current_start, next_start, pickup_mode="HUB"):
-            continue
-        tail_sequences = _enumerate_sequences(
-            current_handler=next_handler,
-            current_start=next_start,
-            destination=destination,
-            remaining_partners=[partner for partner in remaining_partners if partner.id != next_handler.id],
-        )
-        for tail in tail_sequences:
-            sequences.append([current_handler, *tail])
+    for _step in range(MAX_STEPS):
+        if monotonic() - started_at > MAX_ROUTE_SECONDS:
+            raise ValueError("Route calculation exceeded safe limits")
+        if current_partner.id in visited:
+            raise ValueError("No valid route found")
 
-    return sequences
+        print("Current point:", current_point)
+        print("Available partners:", len(partners))
+        print("Visited:", visited)
+
+        visited.add(current_partner.id)
+        route.append(current_partner)
+        max_distance = _partner_max_distance(current_partner)
+        if max_distance <= 0:
+            raise ValueError("No valid route found")
+
+        remaining_distance = _distance_between_points(current_point, destination)
+        if remaining_distance <= max_distance:
+            return route
+
+        next_candidates: list[tuple[float, float, Partner]] = []
+        for partner in partners:
+            if partner.id in visited:
+                continue
+            next_point = _partner_to_point(partner)
+            if not can_partner_deliver(current_partner, current_point, next_point, pickup_mode="HUB"):
+                continue
+            distance_to_destination = _distance_between_points(next_point, destination)
+            next_candidates.append((distance_to_destination, -_partner_max_distance(partner), partner))
+
+        if not next_candidates:
+            raise ValueError("No valid route found")
+
+        current_partner = min(next_candidates, key=lambda item: (item[0], item[1], item[2].id))[2]
+        current_point = _partner_to_point(current_partner)
+
+    raise ValueError("Route calculation exceeded safe limits")
 
 
 def _partner_max_distance(partner: Partner) -> float:
@@ -161,6 +195,21 @@ def _partner_max_distance(partner: Partner) -> float:
 
 def _partner_deadline_days(partner: Partner) -> int:
     return min((int(rule.deadline_days) for rule in partner.freight_rules if rule.deadline_days), default=1)
+
+
+def validate_distance_km(distance: float, *, context: str) -> float:
+    if distance is None or not isinstance(distance, (int, float)) or not isfinite(float(distance)):
+        raise ValueError(f"Distancia invalida calculada para {context}.")
+    return float(distance)
+
+
+def _distance_between_points(start: RoutePoint, end: RoutePoint) -> float:
+    if start.latitude == end.latitude and start.longitude == end.longitude:
+        return 0.0
+    return validate_distance_km(
+        calculate_distance_km((start.latitude, start.longitude), (end.latitude, end.longitude)),
+        context=f"{start.label} -> {end.label}",
+    )
 
 
 def normalize_pickup_mode(value: str | None) -> str:

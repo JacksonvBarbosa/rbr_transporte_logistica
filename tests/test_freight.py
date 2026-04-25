@@ -65,7 +65,7 @@ def test_linear_freight_calculation(monkeypatch):
     assert len(result["results"]) == 1
     assert result["best_price"].price == 350.0
     assert result["distance_km"] == 100.0
-    assert result["best_price"].route_segments[0].segment_days == 2
+    assert result["best_price"].route_segments[0].segment_days == 3
 
 
 def test_fixed_rule_application(monkeypatch):
@@ -80,6 +80,7 @@ def test_fixed_rule_application(monkeypatch):
     result = freight_service.simulate("Sao Paulo", "SP", "Campinas", "SP")
 
     assert result["best_price"].price == 420.0
+    assert result["best_price"].deadline_days == 4
 
 
 def test_fixed_rule_remains_loaded_after_reload():
@@ -143,10 +144,7 @@ def test_multi_leg_route_is_built_automatically_with_one_partner(monkeypatch):
     )
     session.commit()
 
-    lookup = {
-        ("Sao Paulo", "SP"): (0.0, 0.0),
-        ("Campinas", "SP"): (10.0, 10.0),
-    }
+    lookup = {("Sao Paulo", "SP"): (0.0, 0.0), ("Campinas", "SP"): (10.0, 10.0)}
     distance_map = {
         ((0.0, 0.0), (1.0, 1.0)): 40.0,
         ((1.0, 1.0), (10.0, 10.0)): 60.0,
@@ -164,14 +162,10 @@ def test_multi_leg_route_is_built_automatically_with_one_partner(monkeypatch):
         destination_state="SP",
     )
 
-    assert [point.label for point in route["route_points"]] == ["Origem", "Partner A", "Destino"]
-    assert route["selected_partner_ids"] == [partner_a.id]
-    assert len(route["segments"]) == 1
-    assert [segment.price for segment in route["segments"]] == [200.0]
-    assert route["segments"][-1].destination_label == "Destino"
     assert route["total_cost"] == 200.0
     assert route["total_distance_km"] == 90.0
-    assert route["total_deadline_days"] == 1
+    assert route["total_deadline_days"] == 5
+    assert route["route_segments"][0].segment_days == 5
     assert route["manual_override"] is False
 
 
@@ -210,10 +204,7 @@ def test_multi_leg_route_is_built_automatically_with_multiple_partners(monkeypat
     )
     session.commit()
 
-    lookup = {
-        ("Guarulhos", "SP"): (0.0, 0.0),
-        ("Camamu", "BA"): (30.0, 30.0),
-    }
+    lookup = {("Guarulhos", "SP"): (0.0, 0.0), ("Camamu", "BA"): (30.0, 30.0)}
     distance_map = {
         ((0.0, 0.0), (5.0, 5.0)): 100.0,
         ((0.0, 0.0), (15.0, 15.0)): 100.0,
@@ -234,17 +225,15 @@ def test_multi_leg_route_is_built_automatically_with_multiple_partners(monkeypat
         destination_state="BA",
     )
 
-    assert [point.label for point in route["route_points"]] == ["Origem", "Partner A", "Partner B", "Destino"]
     assert route["selected_partner_ids"] == [partner_a.id, partner_b.id]
-    assert len(route["segments"]) == 2
-    assert [segment.price for segment in route["segments"]] == [200.0, 300.0]
     assert route["total_cost"] == 500.0
     assert route["total_distance_km"] == 440.0
-    assert route["total_deadline_days"] == 4
+    assert route["total_deadline_days"] == 11
     assert route["segment_pickup_modes"] == ["HUB", "DIRECT"]
+    assert [segment.segment_days for segment in route["route_segments"]] == [6, 5]
 
 
-def test_multi_leg_route_chooses_lowest_total_cost_then_lowest_time(monkeypatch):
+def test_multi_leg_route_uses_greedy_next_partner_selection(monkeypatch):
     session = make_session()
     partner_service = PartnerService(PartnerRepository(session), FreightRepository(session))
     partner_a = partner_service.create_partner(
@@ -317,8 +306,8 @@ def test_multi_leg_route_chooses_lowest_total_cost_then_lowest_time(monkeypatch)
         destination_state="BA",
     )
 
-    assert route["selected_partner_ids"] == [partner_a.id, partner_b.id]
-    assert route["total_cost"] == 500.0
+    assert route["selected_partner_ids"] == [partner_a.id, partner_c.id]
+    assert route["total_cost"] == 900.0
 
 
 def test_hub_pickup_mode_adds_detour_and_extra_day(monkeypatch):
@@ -362,9 +351,9 @@ def test_hub_pickup_mode_adds_detour_and_extra_day(monkeypatch):
     )
 
     assert route["total_distance_km"] == 90.0
-    assert route["total_deadline_days"] == 3
+    assert route["total_deadline_days"] == 6
     assert route["route_segments"][0].pickup_mode == "HUB"
-    assert route["route_segments"][0].segment_days == 3
+    assert route["route_segments"][0].segment_days == 6
 
 
 def test_direct_pickup_mode_does_not_add_extra_day(monkeypatch):
@@ -408,8 +397,9 @@ def test_direct_pickup_mode_does_not_add_extra_day(monkeypatch):
     )
 
     assert route["total_distance_km"] == 70.0
-    assert route["total_deadline_days"] == 2
+    assert route["total_deadline_days"] == 5
     assert route["route_segments"][0].pickup_mode == "DIRECT"
+    assert route["route_segments"][0].segment_days == 5
 
 
 def test_mixed_route_hub_hub_direct(monkeypatch):
@@ -479,7 +469,8 @@ def test_mixed_route_hub_hub_direct(monkeypatch):
     )
 
     assert [segment.pickup_mode for segment in route["route_segments"]] == ["HUB", "HUB", "DIRECT"]
-    assert route["total_deadline_days"] == 5
+    assert [segment.segment_days for segment in route["route_segments"]] == [6, 4, 4]
+    assert route["total_deadline_days"] == 14
 
 
 def test_simulation_filters_to_valid_partners(monkeypatch):

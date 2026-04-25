@@ -57,6 +57,31 @@ def test_update_partner_refreshes_coordinates(monkeypatch):
     assert updated.longitude == -43.1729
 
 
+def test_add_rule_auto_calculates_deadline_from_max_km(monkeypatch):
+    session = make_session()
+    service = PartnerService(PartnerRepository(session), FreightRepository(session))
+    monkeypatch.setattr(
+        partner_service_module, "get_coordinates", lambda city, state: (-23.5505, -46.6333)
+    )
+    partner = service.create_partner(
+        name="Transportadora Verde",
+        city="Sao Paulo",
+        state="SP",
+        active=True,
+    )
+
+    rule = service.add_rule(
+        partner_id=partner.id,
+        deadline_days=1,
+        rule_type="FIXED",
+        max_km=750,
+        extra_config={"fixed_price": 320},
+    )
+
+    assert rule.max_km == 750
+    assert rule.deadline_days == 4
+
+
 def test_delete_partner_removes_partner_and_linked_rules(monkeypatch):
     session = make_session()
     service = PartnerService(PartnerRepository(session), FreightRepository(session))
