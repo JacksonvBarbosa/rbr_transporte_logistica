@@ -27,7 +27,6 @@ class ETLService:
                 base_price=row.price,
                 price_per_km=0,
                 max_km=row.km,
-                deadline_days=3,
                 rule_type="LINEAR",
             )
 

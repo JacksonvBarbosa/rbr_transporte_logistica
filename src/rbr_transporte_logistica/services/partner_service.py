@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from math import ceil
 from typing import Any
 
+from rbr_transporte_logistica.constants import AVG_KM_PER_DAY, DELIVERY_BUFFER_DAYS
 from rbr_transporte_logistica.core.models import FreightRule, Partner
 from rbr_transporte_logistica.repositories.freight_repository import FreightRepository
 from rbr_transporte_logistica.repositories.partner_repository import PartnerRepository
@@ -92,7 +94,7 @@ class PartnerService:
     def add_rule(
         self,
         partner_id: int,
-        deadline_days: int,
+        deadline_days: int | None = None,
         rule_type: str = "LINEAR",
         base_price: float = 0.0,
         price_per_km: float = 0.0,
@@ -125,7 +127,7 @@ class PartnerService:
         self,
         rule_id: int,
         *,
-        deadline_days: int,
+        deadline_days: int | None = None,
         rule_type: str,
         base_price: float = 0.0,
         price_per_km: float = 0.0,
@@ -156,18 +158,17 @@ class PartnerService:
             raise ValueError("Regra nao encontrada.")
         self.freight_repository.delete(rule)
 
-    @staticmethod
     def _build_rule_payload(
+        self,
         *,
         rule_type: str,
         base_price: float,
         price_per_km: float,
         max_km: float,
-        deadline_days: int,
+        deadline_days: int | None,
         extra_config: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        if deadline_days <= 0:
-            raise ValueError("Prazo precisa ser maior que zero.")
+        _ = deadline_days
 
         if rule_type == "LINEAR":
             if max_km <= 0:
@@ -176,7 +177,7 @@ class PartnerService:
                 "base_price": float(Decimal(str(base_price))),
                 "price_per_km": float(Decimal(str(price_per_km))),
                 "max_km": float(max_km),
-                "deadline_days": int(deadline_days),
+                "deadline_days": self._calculate_rule_deadline_days(max_km),
                 "rule_type": "LINEAR",
                 "extra_config": None,
             }
@@ -189,7 +190,7 @@ class PartnerService:
                 "base_price": 0.0,
                 "price_per_km": 0.0,
                 "max_km": float(max_km or 999999),
-                "deadline_days": int(deadline_days),
+                "deadline_days": self._calculate_rule_deadline_days(max_km or 999999),
                 "rule_type": "FIXED",
                 "extra_config": {"fixed_price": fixed_price},
             }
@@ -210,9 +211,17 @@ class PartnerService:
                 "base_price": 0.0,
                 "price_per_km": 0.0,
                 "max_km": float(max_km or max_limit),
-                "deadline_days": int(deadline_days),
+                "deadline_days": self._calculate_rule_deadline_days(max_km or max_limit),
                 "rule_type": "TIERED",
                 "extra_config": {"tiers": sorted(normalized_tiers, key=lambda item: item["up_to_km"])},
             }
 
         raise ValueError("Tipo de regra invalido.")
+
+    @staticmethod
+    def _calculate_rule_deadline_days(max_km: float) -> int:
+        normalized_max_km = float(max_km or 0)
+        if normalized_max_km <= 0:
+            raise ValueError("Km maximo precisa ser maior que zero.")
+        base_days = normalized_max_km / AVG_KM_PER_DAY
+        return ceil(base_days) + DELIVERY_BUFFER_DAYS

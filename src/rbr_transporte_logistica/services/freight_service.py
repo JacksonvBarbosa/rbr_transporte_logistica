@@ -4,6 +4,7 @@ from decimal import Decimal
 from math import ceil
 from typing import Any
 
+from rbr_transporte_logistica.constants import DELIVERY_BUFFER_DAYS, HUB_EXTRA_DAYS
 from rbr_transporte_logistica.core.models import FreightRule, Partner
 from rbr_transporte_logistica.dto.route import RouteSegment
 from rbr_transporte_logistica.dto.simulation import (
@@ -21,6 +22,7 @@ from rbr_transporte_logistica.services.route_builder import (
     filter_valid_partners,
     normalize_pickup_mode,
     resolve_segment_pickup_modes,
+    validate_distance_km,
 )
 from rbr_transporte_logistica.utils.geo_utils import calculate_distance_km, get_coordinates
 
@@ -34,8 +36,11 @@ class FreightService:
     ) -> dict[str, Any]:
         origin = self._build_point("Origem", origin_city, origin_state)
         destination = self._build_point("Destino", destination_city, destination_state)
-        km = calculate_distance_km(
-            (origin.latitude, origin.longitude), (destination.latitude, destination.longitude)
+        km = validate_distance_km(
+            calculate_distance_km(
+                (origin.latitude, origin.longitude), (destination.latitude, destination.longitude)
+            ),
+            context=f"{origin.label} -> {destination.label}",
         )
         if km <= 0:
             raise ValueError("Distancia precisa ser maior que zero.")
@@ -395,9 +400,9 @@ class FreightService:
         max_km = float(rule.max_km or 0)
         if max_km <= 0:
             raise ValueError("Km maximo precisa ser maior que zero para estimar prazo.")
-        estimated_days = ceil(km / max_km) * int(rule.deadline_days)
+        estimated_days = ceil((float(km) / max_km) * int(rule.deadline_days)) + DELIVERY_BUFFER_DAYS
         if str(pickup_mode or "DIRECT").upper() == "HUB":
-            estimated_days += 1
+            estimated_days += HUB_EXTRA_DAYS
         return max(estimated_days, 1)
 
     def _compile_route_plan(
@@ -451,8 +456,11 @@ class FreightService:
         return {
             "origin": origin,
             "destination": destination,
-            "direct_distance_km": calculate_distance_km(
-                (origin.latitude, origin.longitude), (destination.latitude, destination.longitude)
+            "direct_distance_km": validate_distance_km(
+                calculate_distance_km(
+                    (origin.latitude, origin.longitude), (destination.latitude, destination.longitude)
+                ),
+                context=f"{origin.label} -> {destination.label}",
             ),
             "selected_partners": selected_partners,
             "selected_partner_ids": selected_partner_ids,

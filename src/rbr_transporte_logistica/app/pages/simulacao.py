@@ -8,6 +8,11 @@ from rbr_transporte_logistica.core.database import db_session
 from rbr_transporte_logistica.services.route_builder import default_segment_pickup_modes
 
 
+def _handle_route_error(message: str) -> None:
+    st.session_state.pop("last_route", None)
+    st.error(message)
+
+
 def render() -> None:
     st.header("Simulacao de Frete")
     st.caption("Compare parceiros e gere uma rota multi-trecho automaticamente com override manual opcional.")
@@ -45,7 +50,10 @@ def render() -> None:
                             "segment_pickup_modes"
                         ]
                 except ValueError as exc:
-                    st.error(str(exc))
+                    _handle_route_error(str(exc))
+                    return
+                except Exception:
+                    _handle_route_error("Falha ao calcular a rota. Tente novamente com outro conjunto de parceiros.")
                     return
 
     simulation = st.session_state.get("last_simulation")
@@ -194,7 +202,9 @@ def render() -> None:
                 st.success("Rota manual calculada com sucesso.")
                 st.rerun()
             except ValueError as exc:
-                st.error(str(exc))
+                _handle_route_error(str(exc))
+            except Exception:
+                _handle_route_error("Falha ao calcular a rota. Tente novamente com outro conjunto de parceiros.")
     else:
         if st.button("Recalcular rota automatica", key="rebuild_auto_route"):
             try:
@@ -210,4 +220,6 @@ def render() -> None:
                 st.success("Rota automatica recalculada com sucesso.")
                 st.rerun()
             except ValueError as exc:
-                st.error(str(exc))
+                _handle_route_error(str(exc))
+            except Exception:
+                _handle_route_error("Falha ao calcular a rota. Tente novamente com outro conjunto de parceiros.")
