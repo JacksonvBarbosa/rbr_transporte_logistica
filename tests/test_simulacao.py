@@ -106,6 +106,11 @@ class FakeStreamlit:
         self.selectbox_calls.append({"label": label, "options": options, "index": index, "key": key})
         return options[index]
 
+    def segmented_control(self, _label: str, options: list[str], format_func=None, default=None):
+        if default in options:
+            return default
+        return options[0]
+
 
 class FakePartnerController:
     def __init__(self, partners: list[SimpleNamespace]) -> None:
@@ -157,20 +162,22 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
                 "origin": SimpleNamespace(city="Sao Paulo", state="SP"),
                 "destination": SimpleNamespace(city="Campinas", state="SP"),
             },
-            "last_route": {
-                "total_distance_km": 120.0,
-                "total_cost": 300.0,
-                "total_deadline_days": 2,
-                "route_points": [
-                    SimpleNamespace(label="Origem", city="Sao Paulo", state="SP"),
-                    SimpleNamespace(label="Partner C", city="Curitiba", state="PR"),
-                    SimpleNamespace(label="Destino", city="Campinas", state="SP"),
-                ],
-                "selected_partner_ids": [3],
-                "route_segments": [],
-                "segment_pickup_modes": ["DIRECT"],
-                "manual_override": False,
-            },
+                "last_route": {
+                    "total_distance_km": 120.0,
+                    "total_cost": 300.0,
+                    "total_time": 2,
+                    "total_deadline_days": 2,
+                    "route_points": [
+                        SimpleNamespace(label="Origem", city="Sao Paulo", state="SP"),
+                        SimpleNamespace(label="Partner C", city="Curitiba", state="PR"),
+                        SimpleNamespace(label="Destino", city="Campinas", state="SP"),
+                    ],
+                    "selected_partner_ids": [3],
+                    "route_segments": [],
+                    "segment_pickup_modes": ["DIRECT"],
+                    "manual_override": False,
+                    "selected_strategy": "MULTI",
+                },
             "selected_partner_ids": [999, 3],
         }
     )

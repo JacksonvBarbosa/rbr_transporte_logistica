@@ -306,8 +306,8 @@ def test_multi_leg_route_uses_greedy_next_partner_selection(monkeypatch):
         destination_state="BA",
     )
 
-    assert route["selected_partner_ids"] == [partner_a.id, partner_c.id]
-    assert route["total_cost"] == 900.0
+    assert route["selected_partner_ids"] == [partner_a.id, partner_b.id]
+    assert route["total_cost"] == 500.0
 
 
 def test_hub_pickup_mode_adds_detour_and_extra_day(monkeypatch):
@@ -532,7 +532,10 @@ def test_simulation_filters_to_valid_partners(monkeypatch):
     simulation = freight_service.simulate("Guarulhos", "SP", "Camamu", "BA")
 
     assert simulation["valid_partner_ids"] == [partner_a.id, partner_b.id]
-    assert [result.partner_id for result in simulation["results"]] == [partner_a.id]
+    assert [result.partner_id for result in simulation["results"]] == []
+    assert simulation["selected_strategy"] == "MULTI"
+    assert simulation["selected_route"]["selected_partner_ids"] == [partner_a.id, partner_b.id]
+    assert simulation["error"] is False
 
 
 def test_multi_leg_route_raises_when_no_valid_route_exists(monkeypatch):
@@ -567,13 +570,16 @@ def test_multi_leg_route_raises_when_no_valid_route_exists(monkeypatch):
 
     freight_service = FreightService(PartnerRepository(session))
 
-    with pytest.raises(ValueError, match="No valid route found"):
-        freight_service.simulate_multi_leg(
-            origin_city="Guarulhos",
-            origin_state="SP",
-            destination_city="Camamu",
-            destination_state="BA",
-        )
+    route = freight_service.simulate_multi_leg(
+        origin_city="Guarulhos",
+        origin_state="SP",
+        destination_city="Camamu",
+        destination_state="BA",
+    )
+
+    assert route["error"] is True
+    assert route["message"] == "No partners available to cover this segment"
+    assert route["suggested_action"] == "Cadastrar parceiro na regiao"
 
 
 def test_multi_leg_route_raises_readable_error_for_partner_without_coordinates(monkeypatch):
@@ -621,3 +627,145 @@ def test_multi_leg_route_raises_readable_error_for_partner_without_coordinates(m
         "ser usados na rota: Partner Sem Coordenadas. "
         "Edite o parceiro e salve novamente para geocodificar automaticamente."
     )
+
+
+def test_simulation_prefers_direct_when_cheaper(monkeypatch):
+    session = make_session()
+    partner_service = PartnerService(PartnerRepository(session), FreightRepository(session))
+    direct_partner = partner_service.create_partner(
+        name="Direct Partner",
+        city="Campinas",
+        state="SP",
+        latitude=10.0,
+        longitude=10.0,
+        active=True,
+    )
+    leg_a = partner_service.create_partner(
+        name="Leg A",
+        city="Sorocaba",
+        state="SP",
+        latitude=2.0,
+        longitude=2.0,
+        active=True,
+    )
+    leg_b = partner_service.create_partner(
+        name="Leg B",
+        city="Rio de Janeiro",
+        state="RJ",
+        latitude=6.0,
+        longitude=6.0,
+        active=True,
+    )
+    partner_service.add_rule(
+        partner_id=direct_partner.id,
+        deadline_days=2,
+        rule_type="FIXED",
+        extra_config={"fixed_price": 300},
+        max_km=120.0,
+    )
+    partner_service.add_rule(
+        partner_id=leg_a.id,
+        deadline_days=1,
+        rule_type="FIXED",
+        extra_config={"fixed_price": 250},
+        max_km=80.0,
+    )
+    partner_service.add_rule(
+        partner_id=leg_b.id,
+        deadline_days=1,
+        rule_type="FIXED",
+        extra_config={"fixed_price": 250},
+        max_km=80.0,
+    )
+    session.commit()
+
+    lookup = {("Sao Paulo", "SP"): (0.0, 0.0), ("Campinas", "SP"): (10.0, 10.0)}
+    distance_map = {
+        ((0.0, 0.0), (10.0, 10.0)): 100.0,
+        ((0.0, 0.0), (2.0, 2.0)): 30.0,
+        ((2.0, 2.0), (6.0, 6.0)): 40.0,
+        ((6.0, 6.0), (10.0, 10.0)): 30.0,
+        ((2.0, 2.0), (10.0, 10.0)): 70.0,
+    }
+    monkeypatch.setattr(freight_service_module, "get_coordinates", lambda city, state: lookup[(city, state)])
+    monkeypatch.setattr(freight_service_module, "calculate_distance_km", _distance_fn(distance_map))
+    monkeypatch.setattr(route_builder_module, "calculate_distance_km", _distance_fn(distance_map))
+
+    freight_service = FreightService(PartnerRepository(session))
+    simulation = freight_service.simulate("Sao Paulo", "SP", "Campinas", "SP")
+
+    assert simulation["selected_strategy"] == "DIRECT"
+    assert simulation["selected_route"]["total_cost"] == 300.0
+    assert simulation["alternative_option"]["selected_strategy"] == "MULTI"
+
+
+def test_simulation_prefers_multi_for_time_optimization(monkeypatch):
+    session = make_session()
+    partner_service = PartnerService(PartnerRepository(session), FreightRepository(session))
+    direct_partner = partner_service.create_partner(
+        name="Direct Slow",
+        city="Campinas",
+        state="SP",
+        latitude=10.0,
+        longitude=10.0,
+        active=True,
+    )
+    leg_a = partner_service.create_partner(
+        name="Leg Fast A",
+        city="Sorocaba",
+        state="SP",
+        latitude=2.0,
+        longitude=2.0,
+        active=True,
+    )
+    leg_b = partner_service.create_partner(
+        name="Leg Fast B",
+        city="Rio de Janeiro",
+        state="RJ",
+        latitude=6.0,
+        longitude=6.0,
+        active=True,
+    )
+    partner_service.add_rule(
+        partner_id=direct_partner.id,
+        deadline_days=20,
+        rule_type="FIXED",
+        extra_config={"fixed_price": 200},
+        max_km=120.0,
+    )
+    partner_service.add_rule(
+        partner_id=leg_a.id,
+        deadline_days=1,
+        rule_type="FIXED",
+        extra_config={"fixed_price": 300},
+        max_km=80.0,
+    )
+    partner_service.add_rule(
+        partner_id=leg_b.id,
+        deadline_days=1,
+        rule_type="FIXED",
+        extra_config={"fixed_price": 300},
+        max_km=80.0,
+    )
+    direct_partner.freight_rules[0].deadline_days = 20
+    leg_a.freight_rules[0].deadline_days = 1
+    leg_b.freight_rules[0].deadline_days = 1
+    session.commit()
+
+    lookup = {("Sao Paulo", "SP"): (0.0, 0.0), ("Campinas", "SP"): (10.0, 10.0)}
+    distance_map = {
+        ((0.0, 0.0), (10.0, 10.0)): 100.0,
+        ((0.0, 0.0), (2.0, 2.0)): 30.0,
+        ((2.0, 2.0), (6.0, 6.0)): 40.0,
+        ((6.0, 6.0), (10.0, 10.0)): 30.0,
+        ((2.0, 2.0), (10.0, 10.0)): 70.0,
+    }
+    monkeypatch.setattr(freight_service_module, "get_coordinates", lambda city, state: lookup[(city, state)])
+    monkeypatch.setattr(freight_service_module, "calculate_distance_km", _distance_fn(distance_map))
+    monkeypatch.setattr(route_builder_module, "calculate_distance_km", _distance_fn(distance_map))
+
+    freight_service = FreightService(PartnerRepository(session))
+    simulation = freight_service.simulate("Sao Paulo", "SP", "Campinas", "SP", optimization_mode="time")
+
+    assert simulation["selected_strategy"] == "MULTI"
+    assert simulation["selected_route"]["total_time"] < simulation["alternative_option"]["total_time"]

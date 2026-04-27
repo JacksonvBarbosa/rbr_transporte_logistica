@@ -58,7 +58,6 @@ def render() -> None:
                     coords_str = f"{partner.latitude:.6f}, {partner.longitude:.6f}"
                 else:
                     coords_str = "Coordenadas não disponíveis"
-                
                 st.caption(
                     f"Coordenadas: {coords_str} | "
                     f"Status: {'Ativo' if partner.active else 'Inativo'}"
@@ -145,7 +144,8 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
     existing_config = rule.extra_config or {} if rule else {}
 
     col1, col2 = st.columns(2)
-    rule_type = col1.selectbox("Tipo de regra", ["LINEAR", "FIXED", "TIERED"], key=f"type_{prefix}", index=["LINEAR", "FIXED", "TIERED"].index(existing_rule_type))
+    rule_type = col1.selectbox("Tipo de regra", ["LINEAR", "FIXED", "TIERED"],
+                               key=f"type_{prefix}", index=["LINEAR", "FIXED", "TIERED"].index(existing_rule_type))
     max_km_default = float(rule.max_km if rule else 300.0)
     max_km = float(
         col2.number_input(

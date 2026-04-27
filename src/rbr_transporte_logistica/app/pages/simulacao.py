@@ -29,6 +29,12 @@ def render() -> None:
             dest_col, dest_state_col = st.columns(2)
             destination_city = dest_col.text_input("Cidade de destino", value="Rio de Janeiro")
             destination_state = dest_state_col.text_input("UF de destino", value="RJ", max_chars=2)
+            optimization_mode = st.segmented_control(
+                "Otimizacao",
+                options=["cost", "time"],
+                format_func=lambda value: "Custo" if value == "cost" else "Tempo",
+                default="cost",
+            )
             compare = st.form_submit_button("Calcular melhor frete", type="primary")
 
             if compare:
@@ -38,17 +44,22 @@ def render() -> None:
                         origin_state=origin_state,
                         destination_city=destination_city,
                         destination_state=destination_state,
+                        optimization_mode=optimization_mode,
                     )
                     st.session_state["last_simulation"] = result
                     st.session_state.pop("last_route", None)
                     st.session_state.pop("last_quote", None)
                     st.session_state["selected_partner_ids"] = result.get("valid_partner_ids", [])
-                    if result.get("suggested_route"):
-                        st.session_state["last_route"] = result["suggested_route"]
-                        st.session_state["selected_partner_ids"] = result["suggested_route"]["selected_partner_ids"]
-                        st.session_state["selected_segment_pickup_modes"] = result["suggested_route"][
+                    st.session_state["optimization_mode"] = result.get("optimization_mode", optimization_mode)
+                    if result.get("selected_route"):
+                        st.session_state["last_route"] = result["selected_route"]
+                        st.session_state["selected_partner_ids"] = result["selected_route"]["selected_partner_ids"]
+                        st.session_state["selected_segment_pickup_modes"] = result["selected_route"][
                             "segment_pickup_modes"
                         ]
+                    if result.get("error"):
+                        _handle_route_error(result["message"])
+                        return
                 except ValueError as exc:
                     _handle_route_error(str(exc))
                     return
@@ -62,8 +73,17 @@ def render() -> None:
         return
 
     st.metric("Distancia direta", f"{simulation['distance_km']:,.2f} km")
-    if not simulation["results"] and not simulation.get("suggested_route"):
-        st.warning("Nenhuma rota valida foi encontrada para esse trajeto.")
+    if simulation.get("error"):
+        st.warning(simulation["message"])
+        if simulation.get("last_reachable_point") is not None:
+            last_point = simulation["last_reachable_point"]
+            st.caption(
+                f"Ultimo ponto alcancavel: {last_point.label} ({last_point.city}/{last_point.state})"
+            )
+        if simulation.get("closest_partners"):
+            closest_df = pd.DataFrame(simulation["closest_partners"])
+            st.dataframe(closest_df, use_container_width=True, hide_index=True)
+        st.info(simulation.get("suggested_action", "Cadastrar parceiro na regiao"))
         return
 
     comparison_df = pd.DataFrame(
@@ -81,6 +101,12 @@ def render() -> None:
             for row in simulation["results"]
         ]
     )
+    selected_strategy = simulation.get("selected_strategy")
+    if selected_strategy:
+        st.caption(
+            f"Estrategia selecionada: {selected_strategy} | Modo: "
+            f"{'Custo' if simulation.get('optimization_mode') == 'cost' else 'Tempo'}"
+        )
     st.subheader("Comparativo de parceiros")
     if not comparison_df.empty:
         st.dataframe(comparison_df, use_container_width=True, hide_index=True)
@@ -105,7 +131,7 @@ def render() -> None:
         summary_cols = st.columns(3)
         summary_cols[0].metric("Distancia total da rota", f"{route['total_distance_km']:,.2f} km")
         summary_cols[1].metric("Custo total da rota", f"R$ {route['total_cost']:,.2f}")
-        summary_cols[2].metric("Prazo total", f"{route['total_deadline_days']} dias")
+        summary_cols[2].metric("Prazo total", f"{route['total_time']} dias")
         route_points_labels = " -> ".join(
             f"{point.label} ({point.city}/{point.state})" for point in route["route_points"]
         )
@@ -113,7 +139,14 @@ def render() -> None:
         st.caption(
             "Modo atual: "
             + ("override manual" if route.get("manual_override") else "geracao automatica")
+            + f" | Estrategia: {route.get('selected_strategy')}"
         )
+        alternative_option = simulation.get("alternative_option")
+        if alternative_option:
+            st.caption(
+                f"Alternativa: {alternative_option['selected_strategy']} | "
+                f"R$ {alternative_option['total_cost']:,.2f} | {alternative_option['total_time']} dias"
+            )
 
         st.subheader("Trechos calculados")
         segments_df = pd.DataFrame(
@@ -195,7 +228,11 @@ def render() -> None:
                     destination_state=simulation["destination"].state,
                     partner_ids=selected_partner_ids,
                     segment_pickup_modes=selected_segment_pickup_modes,
+                    optimization_mode=st.session_state.get("optimization_mode", "cost"),
                 )
+                if route.get("error"):
+                    _handle_route_error(route["message"])
+                    return
                 st.session_state["last_route"] = route
                 st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
                 st.session_state["selected_segment_pickup_modes"] = route["segment_pickup_modes"]
@@ -213,7 +250,11 @@ def render() -> None:
                     origin_state=simulation["origin"].state,
                     destination_city=simulation["destination"].city,
                     destination_state=simulation["destination"].state,
+                    optimization_mode=st.session_state.get("optimization_mode", "cost"),
                 )
+                if route.get("error"):
+                    _handle_route_error(route["message"])
+                    return
                 st.session_state["last_route"] = route
                 st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
                 st.session_state["selected_segment_pickup_modes"] = route["segment_pickup_modes"]

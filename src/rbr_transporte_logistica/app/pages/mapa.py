@@ -26,12 +26,14 @@ def render() -> None:
         return
 
     simulation = st.session_state.get("last_simulation")
-    visible_partner_ids = set(simulation.get("valid_partner_ids", [])) if simulation else {partner.id for partner in partners}
+    visible_partner_ids = set(simulation.get("valid_partner_ids", [])) \
+        if simulation else {partner.id for partner in partners}
     filtered_partners = [partner for partner in partners if partner.id in visible_partner_ids]
     if not filtered_partners:
         filtered_partners = partners
 
-    partner_labels = {partner.id: f"{partner.name} ({partner.city}/{partner.state})" for partner in filtered_partners}
+    partner_labels = {partner.id: f"{partner.name} ({partner.city}/{partner.state})"
+                      for partner in filtered_partners}
     valid_partner_ids = list(partner_labels.keys())
     sanitized_default = [
         partner_id

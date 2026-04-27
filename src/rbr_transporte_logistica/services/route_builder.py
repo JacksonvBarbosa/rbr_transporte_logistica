@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import isfinite
-from time import monotonic
 from collections.abc import Callable, Iterable
 
 from rbr_transporte_logistica.core.models import Partner
@@ -10,8 +10,55 @@ from rbr_transporte_logistica.utils.geo_utils import calculate_distance_km
 
 RouteScorer = Callable[[list[RoutePoint]], tuple[float, int]]
 VALID_PICKUP_MODES = {"DIRECT", "HUB"}
-MAX_STEPS = 10
-MAX_ROUTE_SECONDS = 5.0
+
+
+@dataclass(slots=True)
+class PartnerReach:
+    partner_id: int
+    partner_name: str
+    reachable_distance_km: float
+    remaining_distance_km: float
+    max_km: float
+    partner_point: RoutePoint
+    max_reach_point: RoutePoint
+    reachable_region: str
+
+
+class RouteBuildError(ValueError):
+    def __init__(
+        self,
+        *,
+        message: str,
+        last_reachable_point: RoutePoint,
+        max_reachable_distance_km: float,
+        closest_partners: list[PartnerReach],
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.last_reachable_point = last_reachable_point
+        self.max_reachable_distance_km = max_reachable_distance_km
+        self.closest_partners = closest_partners
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "error": True,
+            "message": self.message,
+            "last_reachable_point": self.last_reachable_point,
+            "max_reachable_distance_km": round(self.max_reachable_distance_km, 2),
+            "closest_partners": [
+                {
+                    "partner_id": reach.partner_id,
+                    "partner_name": reach.partner_name,
+                    "reachable_distance_km": round(reach.reachable_distance_km, 2),
+                    "remaining_distance_km": round(reach.remaining_distance_km, 2),
+                    "max_km": round(reach.max_km, 2),
+                    "reachable_region": reach.reachable_region,
+                    "partner_point": reach.partner_point,
+                    "max_reach_point": reach.max_reach_point,
+                }
+                for reach in self.closest_partners
+            ],
+        }
 
 
 def build_route(
@@ -22,7 +69,7 @@ def build_route(
 ) -> list[RoutePoint]:
     candidates = build_candidate_routes(origin, destination, partners)
     if not candidates:
-        raise ValueError("No valid route found")
+        raise build_route_error(origin, destination, partners)
     if scorer is None:
         scorer = _default_scorer
     return min(candidates, key=scorer)
@@ -40,32 +87,34 @@ def build_candidate_routes(
         and partner.longitude is not None
         and _partner_max_distance(partner) > 0
     ]
-
-    routes: list[list[Partner]] = []
-    for partner in partner_candidates:
-        try:
-            routes.append(
-                _build_greedy_sequence(
-                    origin=origin,
-                    destination=destination,
-                    partners=partner_candidates,
-                    starting_partner=partner,
-                )
-            )
-        except ValueError as exc:
-            if str(exc).strip() != "No valid route found":
-                raise
-            continue
-
-    unique_routes: list[list[RoutePoint]] = []
+    routes: list[list[RoutePoint]] = []
     seen_route_ids: set[tuple[int, ...]] = set()
-    for route in routes:
-        route_ids = tuple(partner.id for partner in route)
+
+    def _register_route(current_route: list[RoutePoint]) -> None:
+        route_ids = tuple(point.partner_id for point in current_route)
         if route_ids in seen_route_ids:
-            continue
+            return
         seen_route_ids.add(route_ids)
-        unique_routes.append([origin, *[_partner_to_point(partner) for partner in route], destination])
-    return unique_routes
+        routes.append([origin, *current_route, destination])
+
+    def _dfs(current_point: RoutePoint, visited: set[int], current_route: list[RoutePoint], current_partner: Partner) -> None:
+        if _distance_between_points(current_point, destination) <= _partner_max_distance(current_partner):
+            _register_route(current_route)
+
+        next_partners = filter_partners_for_progression(current_point, destination, partner_candidates)
+        for partner in next_partners:
+            if partner.id in visited:
+                continue
+            next_point = _partner_to_point(partner)
+            if next_point.latitude == current_point.latitude and next_point.longitude == current_point.longitude:
+                continue
+            _dfs(next_point, {*visited, partner.id}, [*current_route, next_point], partner)
+
+    for partner in partner_candidates:
+        partner_point = _partner_to_point(partner)
+        if _distance_between_points(origin, partner_point) <= _partner_max_distance(partner):
+            _dfs(partner_point, {partner.id}, [partner_point], partner)
+    return routes
 
 
 def filter_valid_partners(
@@ -82,6 +131,139 @@ def filter_valid_partners(
         if point.partner_id is not None
     }
     return [partner for partner in partner_list if partner.id in valid_partner_ids]
+
+
+def filter_partners_for_segment(
+    current_point: RoutePoint,
+    target_point: RoutePoint,
+    partners: Iterable[Partner],
+) -> list[Partner]:
+    valid_partners: list[Partner] = []
+    for partner in partners:
+        if partner.latitude is None or partner.longitude is None:
+            continue
+        segment_distance = _distance_between_points(current_point, target_point)
+        if segment_distance <= _partner_max_distance(partner):
+            valid_partners.append(partner)
+    return valid_partners
+
+
+def filter_partners_for_progression(
+    current_point: RoutePoint,
+    destination: RoutePoint,
+    partners: Iterable[Partner],
+) -> list[Partner]:
+    valid_partners: list[Partner] = []
+    for partner in partners:
+        if partner.latitude is None or partner.longitude is None:
+            continue
+        partner_point = _partner_to_point(partner)
+        if partner_point.latitude == current_point.latitude and partner_point.longitude == current_point.longitude:
+            continue
+        if _distance_between_points(current_point, partner_point) <= _partner_max_distance(partner):
+            if _distance_between_points(partner_point, destination) < _distance_between_points(current_point, destination):
+                valid_partners.append(partner)
+    return valid_partners
+
+
+def analyze_partner_reach(
+    current_point: RoutePoint,
+    destination: RoutePoint,
+    partners: Iterable[Partner],
+) -> list[PartnerReach]:
+    reaches: list[PartnerReach] = []
+    remaining_distance = _distance_between_points(current_point, destination)
+    for partner in partners:
+        if partner.latitude is None or partner.longitude is None:
+            continue
+        max_km = _partner_max_distance(partner)
+        if max_km <= 0:
+            continue
+        partner_point = _partner_to_point(partner)
+        distance_to_partner = _distance_between_points(current_point, partner_point)
+        if distance_to_partner > max_km:
+            continue
+        reachable_distance = min(max_km, remaining_distance)
+        max_reach_point = project_reach_point(current_point, destination, reachable_distance)
+        remaining_after_reach = max(remaining_distance - reachable_distance, 0.0)
+        reaches.append(
+            PartnerReach(
+                partner_id=partner.id,
+                partner_name=partner.name,
+                reachable_distance_km=reachable_distance,
+                remaining_distance_km=remaining_after_reach,
+                max_km=max_km,
+                partner_point=partner_point,
+                max_reach_point=max_reach_point,
+                reachable_region=f"{max_reach_point.city}/{max_reach_point.state}",
+            )
+        )
+    reaches.sort(
+        key=lambda item: (
+            item.remaining_distance_km,
+            -item.reachable_distance_km,
+            item.partner_name,
+        )
+    )
+    return reaches
+
+
+def build_route_error(
+    current_point: RoutePoint,
+    destination: RoutePoint,
+    partners: Iterable[Partner],
+) -> RouteBuildError:
+    reaches = analyze_partner_reach(current_point, destination, partners)
+    if not reaches:
+        message = "Nenhum parceiro disponível para cobrir esse segmento"
+        return RouteBuildError(
+            message=message,
+            last_reachable_point=current_point,
+            max_reachable_distance_km=0.0,
+            closest_partners=[],
+        )
+
+    best = reaches[0]
+    location = f"{current_point.city}/{current_point.state}"
+    message = (
+        f"Nenhum parceiro disponível pertence a {location}. "
+        f"Distância máxima de cobertura: {best.reachable_distance_km:.2f} km"
+    )
+    return RouteBuildError(
+        message=message,
+        last_reachable_point=best.max_reach_point,
+        max_reachable_distance_km=best.reachable_distance_km,
+        closest_partners=reaches[:3],
+    )
+
+
+def project_reach_point(start: RoutePoint, destination: RoutePoint, distance_km: float) -> RoutePoint:
+    total_distance = _distance_between_points(start, destination)
+    if total_distance <= 0:
+        return start
+    ratio = min(max(distance_km / total_distance, 0.0), 1.0)
+    latitude = start.latitude + (destination.latitude - start.latitude) * ratio
+    longitude = start.longitude + (destination.longitude - start.longitude) * ratio
+    if ratio >= 0.999:
+        city = destination.city
+        state = destination.state
+        label = f"Alcance maximo em {destination.city}/{destination.state}"
+    elif ratio <= 0.001:
+        city = start.city
+        state = start.state
+        label = f"Alcance maximo em {start.city}/{start.state}"
+    else:
+        city = f"Próximo de {destination.city}"
+        state = destination.state
+        label = f"Alcance parcial rumo a {destination.city}/{destination.state}"
+    return RoutePoint(
+        label=label,
+        city=city,
+        state=state,
+        latitude=latitude,
+        longitude=longitude,
+        point_type="projected",
+    )
 
 
 def estimate_delivery_days(partner: Partner, start: RoutePoint, end: RoutePoint) -> int:
@@ -135,58 +317,6 @@ def build_physical_path(
         if path[-1] != end:
             path.append(end)
     return path
-
-
-def _build_greedy_sequence(
-    *,
-    origin: RoutePoint,
-    destination: RoutePoint,
-    partners: list[Partner],
-    starting_partner: Partner,
-) -> list[Partner]:
-    route: list[Partner] = []
-    visited: set[int] = set()
-    current_point = origin
-    current_partner = starting_partner
-    started_at = monotonic()
-
-    for _step in range(MAX_STEPS):
-        if monotonic() - started_at > MAX_ROUTE_SECONDS:
-            raise ValueError("Route calculation exceeded safe limits")
-        if current_partner.id in visited:
-            raise ValueError("No valid route found")
-
-        print("Current point:", current_point)
-        print("Available partners:", len(partners))
-        print("Visited:", visited)
-
-        visited.add(current_partner.id)
-        route.append(current_partner)
-        max_distance = _partner_max_distance(current_partner)
-        if max_distance <= 0:
-            raise ValueError("No valid route found")
-
-        remaining_distance = _distance_between_points(current_point, destination)
-        if remaining_distance <= max_distance:
-            return route
-
-        next_candidates: list[tuple[float, float, Partner]] = []
-        for partner in partners:
-            if partner.id in visited:
-                continue
-            next_point = _partner_to_point(partner)
-            if not can_partner_deliver(current_partner, current_point, next_point, pickup_mode="HUB"):
-                continue
-            distance_to_destination = _distance_between_points(next_point, destination)
-            next_candidates.append((distance_to_destination, -_partner_max_distance(partner), partner))
-
-        if not next_candidates:
-            raise ValueError("No valid route found")
-
-        current_partner = min(next_candidates, key=lambda item: (item[0], item[1], item[2].id))[2]
-        current_point = _partner_to_point(current_partner)
-
-    raise ValueError("Route calculation exceeded safe limits")
 
 
 def _partner_max_distance(partner: Partner) -> float:

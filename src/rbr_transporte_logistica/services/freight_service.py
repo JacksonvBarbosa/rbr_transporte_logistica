@@ -7,18 +7,16 @@ from typing import Any
 from rbr_transporte_logistica.constants import DELIVERY_BUFFER_DAYS, HUB_EXTRA_DAYS
 from rbr_transporte_logistica.core.models import FreightRule, Partner
 from rbr_transporte_logistica.dto.route import RouteSegment
-from rbr_transporte_logistica.dto.simulation import (
-    RoutePoint,
-    RouteSummary,
-    SegmentResult,
-    SimulationResult,
-)
+from rbr_transporte_logistica.dto.simulation import RoutePoint, RouteSummary, SegmentResult, SimulationResult
 from rbr_transporte_logistica.repositories.partner_repository import PartnerRepository
 from rbr_transporte_logistica.services.route_builder import (
+    RouteBuildError,
+    analyze_partner_reach,
     build_candidate_routes,
     build_physical_path,
-    build_route,
+    build_route_error,
     calculate_effective_distance,
+    default_segment_pickup_modes,
     filter_valid_partners,
     normalize_pickup_mode,
     resolve_segment_pickup_modes,
@@ -26,22 +24,25 @@ from rbr_transporte_logistica.services.route_builder import (
 )
 from rbr_transporte_logistica.utils.geo_utils import calculate_distance_km, get_coordinates
 
+VALID_OPTIMIZATION_MODES = {"cost", "time"}
+
 
 class FreightService:
     def __init__(self, partner_repository: PartnerRepository) -> None:
         self.partner_repository = partner_repository
 
     def simulate(
-        self, origin_city: str, origin_state: str, destination_city: str, destination_state: str
+        self,
+        origin_city: str,
+        origin_state: str,
+        destination_city: str,
+        destination_state: str,
+        optimization_mode: str = "cost",
     ) -> dict[str, Any]:
+        optimization_mode = self._normalize_optimization_mode(optimization_mode)
         origin = self._build_point("Origem", origin_city, origin_state)
         destination = self._build_point("Destino", destination_city, destination_state)
-        km = validate_distance_km(
-            calculate_distance_km(
-                (origin.latitude, origin.longitude), (destination.latitude, destination.longitude)
-            ),
-            context=f"{origin.label} -> {destination.label}",
-        )
+        km = self._calculate_direct_distance(origin, destination)
         if km <= 0:
             raise ValueError("Distancia precisa ser maior que zero.")
 
@@ -50,65 +51,61 @@ class FreightService:
             for partner in self.partner_repository.list_all(active_only=True)
             if partner.latitude is not None and partner.longitude is not None
         ]
-        valid_partners = filter_valid_partners(origin, destination, partners)
-        candidate_routes = build_candidate_routes(origin, destination, valid_partners)
-        best_route = (
-            self._find_best_route_plan(origin, destination, valid_partners, candidate_routes)
-            if candidate_routes
-            else None
-        )
-        results: list[SimulationResult] = []
-        best_by_first_partner: dict[int, dict[str, Any]] = {}
-        for route in candidate_routes:
-            plan = self._compile_route_plan(route, valid_partners, manual_override=False)
-            first_segment = plan["segments"][0]
-            first_partner = plan["selected_partners"][0]
-            current_best = best_by_first_partner.get(first_partner.id)
-            candidate_key = (plan["total_cost"], plan["total_deadline_days"], first_partner.name)
-            current_key = None
-            if current_best:
-                current_key = (
-                    current_best["total_cost"],
-                    current_best["total_deadline_days"],
-                    current_best["selected_partners"][0].name,
-                )
-            if current_best is None or candidate_key < current_key:
-                best_by_first_partner[first_partner.id] = plan
-
-        for plan in best_by_first_partner.values():
-            first_segment = plan["route_segments"][0]
-            first_partner = plan["selected_partners"][0]
-            results.append(
-                SimulationResult(
-                    partner_id=first_partner.id,
-                    partner_name=first_partner.name,
-                    city=first_partner.city,
-                    state=first_partner.state,
-                    price=plan["total_cost"],
-                    deadline_days=plan["total_deadline_days"],
-                    rule_type=plan["segments"][0].rule_type,
-                    latitude=first_partner.latitude,
-                    longitude=first_partner.longitude,
-                    distance_km=plan["total_distance_km"],
-                    route_segments=plan["route_segments"],
-                    total_days=plan["total_deadline_days"],
-                    total_cost=plan["total_cost"],
-                )
+        if not partners:
+            return self._build_error_response(
+                origin=origin,
+                destination=destination,
+                distance_km=km,
+                error=RouteBuildError(
+                    message="Nenhum parceiro ativo esta disponivel para montar a rota.",
+                    last_reachable_point=origin,
+                    max_reachable_distance_km=0.0,
+                    closest_partners=[],
+                ),
+                optimization_mode=optimization_mode,
             )
 
-        ordered = sorted(results, key=lambda item: (item.price, item.deadline_days, item.partner_name))
-        best_price = min(ordered, key=lambda item: item.price, default=None)
-        best_deadline = min(ordered, key=lambda item: (item.deadline_days, item.price), default=None)
+        direct_plans = self._build_direct_plans(origin, destination, partners, optimization_mode)
+        direct_results = self._build_simulation_results(direct_plans)
+        best_price = min(direct_results, key=lambda item: item.price, default=None)
+        best_deadline = min(direct_results, key=lambda item: (item.deadline_days, item.price), default=None)
+
+        candidate_routes = build_candidate_routes(origin, destination, partners)
+        valid_partners = filter_valid_partners(origin, destination, partners)
+        multi_routes = [route for route in candidate_routes if len(route) > 3]
+        multi_plan = self._find_best_route_plan(origin, destination, partners, multi_routes, optimization_mode)
+        direct_plan = self._pick_best_plan(direct_plans, optimization_mode)
+        selected_plan = self._select_strategy_plan(direct_plan, multi_plan, optimization_mode)
+        alternative_plan = None
+        if selected_plan is not None:
+            alternatives = [plan for plan in (direct_plan, multi_plan) if plan is not None and plan is not selected_plan]
+            alternative_plan = alternatives[0] if alternatives else None
+
+        if selected_plan is None:
+            return self._build_error_response(
+                origin=origin,
+                destination=destination,
+                distance_km=km,
+                error=build_route_error(origin, destination, partners),
+                optimization_mode=optimization_mode,
+                valid_partner_ids=[partner.id for partner in valid_partners],
+            )
 
         return {
+            "error": False,
             "origin": origin,
             "destination": destination,
             "distance_km": km,
-            "results": ordered,
+            "optimization_mode": optimization_mode,
+            "results": direct_results,
             "best_price": best_price,
             "best_deadline": best_deadline,
             "valid_partner_ids": [partner.id for partner in valid_partners],
-            "suggested_route": best_route,
+            "selected_strategy": selected_plan["selected_strategy"],
+            "selected_route": selected_plan,
+            "suggested_route": selected_plan,
+            "alternative_option": alternative_plan,
+            "reachable_partners": self._serialize_reach(analyze_partner_reach(origin, destination, partners)),
         }
 
     def simulate_multi_leg(
@@ -119,27 +116,51 @@ class FreightService:
         destination_state: str,
         partner_ids: list[int] | None = None,
         segment_pickup_modes: list[str] | None = None,
+        optimization_mode: str = "cost",
     ) -> dict[str, Any]:
+        optimization_mode = self._normalize_optimization_mode(optimization_mode)
         origin = self._build_point("Origem", origin_city, origin_state)
         destination = self._build_point("Destino", destination_city, destination_state)
+        direct_distance_km = self._calculate_direct_distance(origin, destination)
         manual_override = partner_ids is not None
         partners = self._load_route_partners(partner_ids)
-        if manual_override:
-            self._validate_partner_coordinates(partners)
-            route_points = self._build_manual_route_points(origin, destination, partners)
-            plan = self._compile_route_plan(
-                route_points,
-                partners,
-                manual_override=True,
-                segment_pickup_modes=segment_pickup_modes,
+
+        try:
+            if manual_override:
+                self._validate_partner_coordinates(partners)
+                route_points = self._build_manual_route_points(origin, destination, partners)
+                plan = self._compile_route_plan(
+                    route_points,
+                    partners,
+                    manual_override=True,
+                    segment_pickup_modes=segment_pickup_modes,
+                    selected_strategy="MULTI",
+                    optimization_mode=optimization_mode,
+                )
+            else:
+                routeable_partners = [
+                    partner for partner in partners if partner.latitude is not None and partner.longitude is not None
+                ]
+                candidate_routes = build_candidate_routes(origin, destination, routeable_partners)
+                plan = self._find_best_route_plan(
+                    origin,
+                    destination,
+                    routeable_partners,
+                    candidate_routes,
+                    optimization_mode,
+                    manual_override=False,
+                )
+                if plan is None:
+                    raise build_route_error(origin, destination, routeable_partners)
+                partners = routeable_partners
+        except RouteBuildError as exc:
+            return self._build_error_response(
+                origin=origin,
+                destination=destination,
+                distance_km=direct_distance_km,
+                error=exc,
+                optimization_mode=optimization_mode,
             )
-        else:
-            routeable_partners = [
-                partner for partner in partners if partner.latitude is not None and partner.longitude is not None
-            ]
-            candidate_routes = build_candidate_routes(origin, destination, routeable_partners)
-            plan = self._find_best_route_plan(origin, destination, routeable_partners, candidate_routes)
-            partners = routeable_partners
 
         plan["valid_partner_ids"] = [partner.id for partner in filter_valid_partners(origin, destination, partners)]
         return plan
@@ -214,23 +235,6 @@ class FreightService:
             raise ValueError("Nenhum parceiro ativo esta disponivel para montar a rota.")
         return partners
 
-    def _build_route_points(
-        self,
-        origin: RoutePoint,
-        destination: RoutePoint,
-        partners: list[Partner],
-        *,
-        manual_override: bool,
-    ) -> list[RoutePoint]:
-        self._validate_partner_coordinates(partners)
-        if manual_override:
-            return self._build_manual_route_points(origin, destination, partners)
-
-        try:
-            return build_route(origin, destination, partners, scorer=lambda route: self._score_route(route, partners))
-        except ValueError as exc:
-            raise ValueError("No valid route found") from exc
-
     def _build_manual_route_points(
         self, origin: RoutePoint, destination: RoutePoint, partners: list[Partner]
     ) -> list[RoutePoint]:
@@ -238,7 +242,6 @@ class FreightService:
         for partner in partners:
             route_points.append(self._partner_to_point(partner))
         route_points.append(destination)
-        self._compile_route_plan(route_points, partners, manual_override=True)
         return route_points
 
     def _build_route_segments(
@@ -307,10 +310,7 @@ class FreightService:
 
     @staticmethod
     def _partner_max_distance(partner: Partner) -> float:
-        return max(
-            (float(rule.max_km) for rule in partner.freight_rules if rule.max_km is not None),
-            default=0.0,
-        )
+        return max((float(rule.max_km) for rule in partner.freight_rules if rule.max_km is not None), default=0.0)
 
     @staticmethod
     def _validate_partner_coordinates(partners: list[Partner]) -> None:
@@ -325,41 +325,6 @@ class FreightService:
                 f"Edite o parceiro e salve novamente para geocodificar automaticamente."
             )
 
-    @staticmethod
-    def _select_applicable_rule(partner: Partner, km: float) -> FreightRule | None:
-        if not partner.freight_rules:
-            raise ValueError(f"Partner {partner.name} has no rules loaded")
-
-        normalized_rules: list[FreightRule] = []
-        for rule in partner.freight_rules:
-            rule.rule_type = (rule.rule_type or "").upper()
-            normalized_rules.append(rule)
-
-        tiered_rules = [rule for rule in normalized_rules if rule.rule_type == "TIERED"]
-        for rule in sorted(tiered_rules, key=lambda item: (item.max_km, item.deadline_days)):
-            tiers = sorted(
-                (rule.extra_config or {}).get("tiers", []),
-                key=lambda item: item.get("up_to_km", 0),
-            )
-            if any(km <= float(tier["up_to_km"]) for tier in tiers):
-                return rule
-
-        linear_rules = [
-            rule
-            for rule in normalized_rules
-            if rule.rule_type == "LINEAR" and (rule.max_km is None or km <= rule.max_km)
-        ]
-        if linear_rules:
-            return sorted(
-                linear_rules, key=lambda item: (item.max_km or float("inf"), item.deadline_days)
-            )[0]
-
-        fixed_rules = [rule for rule in normalized_rules if rule.rule_type == "FIXED"]
-        if fixed_rules:
-            return sorted(fixed_rules, key=lambda item: (item.deadline_days, item.id))[0]
-
-        return None
-
     def _select_best_rule_quote(
         self,
         partner: Partner,
@@ -371,13 +336,8 @@ class FreightService:
             normalized_type = (rule.rule_type or "").upper()
             if rule.max_km is not None and km > float(rule.max_km):
                 continue
-            if normalized_type == "LINEAR" and km > float(rule.max_km):
-                continue
             if normalized_type == "TIERED":
-                tiers = sorted(
-                    (rule.extra_config or {}).get("tiers", []),
-                    key=lambda item: item.get("up_to_km", 0),
-                )
+                tiers = sorted((rule.extra_config or {}).get("tiers", []), key=lambda item: item.get("up_to_km", 0))
                 if not any(km <= float(tier["up_to_km"]) for tier in tiers):
                     continue
             try:
@@ -388,9 +348,7 @@ class FreightService:
             valid_quotes.append((price, segment_days, normalized_type, rule))
 
         if not valid_quotes:
-            raise ValueError(
-                f"O parceiro {partner.name} nao possui regra para o trecho de {km} km."
-            )
+            raise ValueError(f"O parceiro {partner.name} nao possui regra para o trecho de {km} km.")
 
         price, segment_days, _rule_type, rule = min(valid_quotes, key=lambda item: (item[0], item[1], item[2]))
         return rule, price, segment_days
@@ -412,6 +370,8 @@ class FreightService:
         *,
         manual_override: bool,
         segment_pickup_modes: list[str] | None = None,
+        selected_strategy: str = "MULTI",
+        optimization_mode: str = "cost",
     ) -> dict[str, Any]:
         if len(route_points) < 3:
             raise ValueError("No valid route found")
@@ -425,11 +385,7 @@ class FreightService:
         total_cost = round(segments[-1].total_cost if segments else 0.0, 2)
         total_distance_km = round(sum(segment.segment_distance_km for segment in segments), 2)
         total_deadline_days = segments[-1].total_days if segments else 0
-        physical_path_points = build_physical_path(
-            route_points,
-            {partner.id: partner for partner in selected_partners},
-            resolved_pickup_modes,
-        )
+        physical_path_points = build_physical_path(route_points, {partner.id: partner for partner in selected_partners}, resolved_pickup_modes)
         origin = route_points[0]
         destination = route_points[-1]
         route_segments = [
@@ -453,15 +409,14 @@ class FreightService:
                 for segment in segments
             ]
         ]
+        alternative_mode = "time" if optimization_mode == "cost" else "cost"
         return {
+            "error": False,
             "origin": origin,
             "destination": destination,
-            "direct_distance_km": validate_distance_km(
-                calculate_distance_km(
-                    (origin.latitude, origin.longitude), (destination.latitude, destination.longitude)
-                ),
-                context=f"{origin.label} -> {destination.label}",
-            ),
+            "direct_distance_km": self._calculate_direct_distance(origin, destination),
+            "selected_strategy": selected_strategy,
+            "optimization_mode": optimization_mode,
             "selected_partners": selected_partners,
             "selected_partner_ids": selected_partner_ids,
             "segments": segments,
@@ -470,9 +425,12 @@ class FreightService:
             "route_points": route_points,
             "physical_path_points": physical_path_points,
             "total_cost": total_cost,
+            "total_time": total_deadline_days,
             "total_distance_km": total_distance_km,
             "total_deadline_days": total_deadline_days,
             "manual_override": manual_override,
+            "score": self._plan_sort_key({"total_cost": total_cost, "total_deadline_days": total_deadline_days, "selected_partner_ids": selected_partner_ids}, optimization_mode),
+            "alternative_score": self._plan_sort_key({"total_cost": total_cost, "total_deadline_days": total_deadline_days, "selected_partner_ids": selected_partner_ids}, alternative_mode),
         }
 
     def _find_best_route_plan(
@@ -481,18 +439,164 @@ class FreightService:
         destination: RoutePoint,
         partners: list[Partner],
         candidate_routes: list[list[RoutePoint]],
-    ) -> dict[str, Any]:
-        if not candidate_routes:
-            raise ValueError("No valid route found")
-        plans = [
-            self._compile_route_plan(route_points, partners, manual_override=False)
-            for route_points in candidate_routes
-        ]
-        return min(plans, key=lambda plan: (plan["total_cost"], plan["total_deadline_days"]))
+        optimization_mode: str,
+        *,
+        manual_override: bool = False,
+    ) -> dict[str, Any] | None:
+        plans: list[dict[str, Any]] = []
+        for route_points in candidate_routes:
+            try:
+                plans.append(
+                    self._compile_route_plan(
+                        route_points,
+                        partners,
+                        manual_override=manual_override,
+                        selected_strategy="MULTI",
+                        optimization_mode=optimization_mode,
+                    )
+                )
+            except ValueError:
+                continue
+        return self._pick_best_plan(plans, optimization_mode)
 
-    def _score_route(self, route_points: list[RoutePoint], partners: list[Partner]) -> tuple[float, int]:
-        plan = self._compile_route_plan(route_points, partners, manual_override=False)
-        return (plan["total_cost"], plan["total_deadline_days"])
+    def _build_direct_plans(
+        self,
+        origin: RoutePoint,
+        destination: RoutePoint,
+        partners: list[Partner],
+        optimization_mode: str,
+    ) -> list[dict[str, Any]]:
+        direct_plans: list[dict[str, Any]] = []
+        for partner in partners:
+            try:
+                direct_plan = self._compile_route_plan(
+                    [origin, self._partner_to_point(partner), destination],
+                    [partner],
+                    manual_override=False,
+                    segment_pickup_modes=["DIRECT"],
+                    selected_strategy="DIRECT",
+                    optimization_mode=optimization_mode,
+                )
+                direct_plans.append(direct_plan)
+            except ValueError:
+                continue
+        return direct_plans
+
+    def _build_simulation_results(self, plans: list[dict[str, Any]]) -> list[SimulationResult]:
+        results: list[SimulationResult] = []
+        for plan in plans:
+            first_partner = plan["selected_partners"][0]
+            results.append(
+                SimulationResult(
+                    partner_id=first_partner.id,
+                    partner_name=first_partner.name,
+                    city=first_partner.city,
+                    state=first_partner.state,
+                    price=plan["total_cost"],
+                    deadline_days=plan["total_deadline_days"],
+                    rule_type=plan["segments"][0].rule_type,
+                    latitude=first_partner.latitude,
+                    longitude=first_partner.longitude,
+                    distance_km=plan["total_distance_km"],
+                    route_segments=plan["route_segments"],
+                    total_days=plan["total_deadline_days"],
+                    total_cost=plan["total_cost"],
+                )
+            )
+        return sorted(results, key=lambda item: (item.price, item.deadline_days, item.partner_name))
+
+    def _select_strategy_plan(
+        self,
+        direct_plan: dict[str, Any] | None,
+        multi_plan: dict[str, Any] | None,
+        optimization_mode: str,
+    ) -> dict[str, Any] | None:
+        if direct_plan and multi_plan:
+            direct_primary = self._plan_primary_metric(direct_plan, optimization_mode)
+            multi_primary = self._plan_primary_metric(multi_plan, optimization_mode)
+            if direct_primary < multi_primary:
+                return direct_plan
+            return multi_plan
+        return direct_plan or multi_plan
+
+    def _pick_best_plan(
+        self,
+        plans: list[dict[str, Any]],
+        optimization_mode: str,
+    ) -> dict[str, Any] | None:
+        if not plans:
+            return None
+        return min(plans, key=lambda plan: self._plan_sort_key(plan, optimization_mode))
+
+    def _plan_primary_metric(self, plan: dict[str, Any], optimization_mode: str) -> float:
+        return float(plan["total_cost"] if optimization_mode == "cost" else plan["total_deadline_days"])
+
+    def _plan_sort_key(self, plan: dict[str, Any], optimization_mode: str) -> tuple[float, float, int]:
+        if optimization_mode == "time":
+            return (
+                float(plan["total_deadline_days"]),
+                float(plan["total_cost"]),
+                len(plan.get("selected_partner_ids", [])),
+            )
+        return (
+            float(plan["total_cost"]),
+            float(plan["total_deadline_days"]),
+            len(plan.get("selected_partner_ids", [])),
+        )
+
+    def _build_error_response(
+        self,
+        *,
+        origin: RoutePoint,
+        destination: RoutePoint,
+        distance_km: float,
+        error: RouteBuildError,
+        optimization_mode: str,
+        valid_partner_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
+        payload = error.to_payload()
+        payload.update(
+            {
+                "origin": origin,
+                "destination": destination,
+                "distance_km": distance_km,
+                "optimization_mode": optimization_mode,
+                "results": [],
+                "best_price": None,
+                "best_deadline": None,
+                "valid_partner_ids": valid_partner_ids or [],
+                "selected_strategy": None,
+                "selected_route": None,
+                "suggested_route": None,
+                "alternative_option": None,
+                "total_cost": 0.0,
+                "total_time": 0,
+                "suggested_action": "Cadastrar parceiro na regiao",
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _serialize_reach(reaches: list[Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "partner_id": reach.partner_id,
+                "partner_name": reach.partner_name,
+                "reachable_distance_km": round(reach.reachable_distance_km, 2),
+                "remaining_distance_km": round(reach.remaining_distance_km, 2),
+                "max_km": round(reach.max_km, 2),
+                "reachable_region": reach.reachable_region,
+                "max_reach_point": reach.max_reach_point,
+            }
+            for reach in reaches
+        ]
+
+    @staticmethod
+    def _normalize_optimization_mode(value: str) -> str:
+        normalized = str(value or "cost").strip().lower()
+        if normalized not in VALID_OPTIMIZATION_MODES:
+            raise ValueError("optimization_mode invalido. Use 'cost' ou 'time'.")
+        return normalized
 
     @staticmethod
     def _partner_to_point(partner: Partner) -> RoutePoint:
@@ -516,4 +620,11 @@ class FreightService:
             latitude=latitude,
             longitude=longitude,
             point_type="endpoint",
+        )
+
+    @staticmethod
+    def _calculate_direct_distance(origin: RoutePoint, destination: RoutePoint) -> float:
+        return validate_distance_km(
+            calculate_distance_km((origin.latitude, origin.longitude), (destination.latitude, destination.longitude)),
+            context=f"{origin.label} -> {destination.label}",
         )
