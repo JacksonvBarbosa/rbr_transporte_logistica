@@ -3,10 +3,13 @@ from __future__ import annotations
 import streamlit as st
 
 from rbr_transporte_logistica.app.dependencies import build_partner_controller
+from rbr_transporte_logistica.app.theme import apply_theme, sidebar_nav
 from rbr_transporte_logistica.core.database import db_session
 
 
 def render() -> None:
+    apply_theme()
+    sidebar_nav("Excluir Parceiro")
     st.header("Excluir Parceiro")
     st.caption("Revise os dados do parceiro antes de confirmar a exclusao definitiva.")
 

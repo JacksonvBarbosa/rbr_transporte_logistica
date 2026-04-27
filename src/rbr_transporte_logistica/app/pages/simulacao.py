@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import folium
 import pandas as pd
 import streamlit as st
 
-from rbr_transporte_logistica.app.dependencies import build_freight_controller, build_partner_controller
+from rbr_transporte_logistica.app.dependencies import (
+    build_freight_controller,
+    build_partner_controller,
+    build_quote_controller,
+)
+from rbr_transporte_logistica.app.theme import apply_theme, sidebar_nav
 from rbr_transporte_logistica.core.database import db_session
+from rbr_transporte_logistica.repositories.quote_repository import CotacaoRepo
 from rbr_transporte_logistica.services.route_builder import default_segment_pickup_modes
+from rbr_transporte_logistica.utils.geo_utils import map_center
+
+try:
+    from streamlit_folium import st_folium
+except Exception:  # pragma: no cover
+    st_folium = None
 
 
 def _handle_route_error(message: str) -> None:
@@ -13,254 +26,230 @@ def _handle_route_error(message: str) -> None:
     st.error(message)
 
 
+def _sanitize_selected_partner_ids(session_state: dict, valid_ids: list[int]) -> list[int]:
+    sanitized = [partner_id for partner_id in session_state.get("selected_partner_ids", []) if partner_id in valid_ids]
+    session_state["selected_partner_ids"] = sanitized
+    return sanitized
+
+
 def render() -> None:
-    st.header("Simulacao de Frete")
-    st.caption("Compare parceiros e gere uma rota multi-trecho automaticamente com override manual opcional.")
+    apply_theme()
+    sidebar_nav("Simulação")
+    st.markdown("### Simulacao")
 
     with db_session() as session:
         freight_controller = build_freight_controller(session)
         partner_controller = build_partner_controller(session)
+        quote_controller = build_quote_controller()
+        quote_repo = CotacaoRepo(session)
         active_partners = partner_controller.list_partners(active_only=True)
 
-        with st.form("simulation_form"):
-            origin_col, origin_state_col = st.columns(2)
-            origin_city = origin_col.text_input("Cidade de origem", value="Sao Paulo")
-            origin_state = origin_state_col.text_input("UF de origem", value="SP", max_chars=2)
-            dest_col, dest_state_col = st.columns(2)
-            destination_city = dest_col.text_input("Cidade de destino", value="Rio de Janeiro")
-            destination_state = dest_state_col.text_input("UF de destino", value="RJ", max_chars=2)
-            optimization_mode = st.segmented_control(
-                "Otimizacao",
-                options=["cost", "time"],
-                format_func=lambda value: "Custo" if value == "cost" else "Tempo",
-                default="cost",
-            )
-            compare = st.form_submit_button("Calcular melhor frete", type="primary")
+        row = st.columns([2, 1, 2, 1, 1])
+        origin_city = row[0].text_input("Cidade origem", value=st.session_state.get("origin_city", "Sao Paulo"))
+        origin_state = row[1].text_input("UF origem", value=st.session_state.get("origin_state", "SP"), max_chars=2)
+        destination_city = row[2].text_input("Cidade destino", value=st.session_state.get("destination_city", "Rio de Janeiro"))
+        destination_state = row[3].text_input("UF destino", value=st.session_state.get("destination_state", "RJ"), max_chars=2)
+        if row[4].button("Calcular ->", key="calculate_simulation", type="primary"):
+            try:
+                result = freight_controller.simulate(
+                    origin_city=origin_city,
+                    origin_state=origin_state,
+                    destination_city=destination_city,
+                    destination_state=destination_state,
+                    optimization_mode=st.session_state.get("optimization_mode", "cost"),
+                )
+                st.session_state["origin_city"] = origin_city
+                st.session_state["origin_state"] = origin_state
+                st.session_state["destination_city"] = destination_city
+                st.session_state["destination_state"] = destination_state
+                st.session_state["last_simulation"] = result
+                st.session_state.pop("last_route", None)
+                st.session_state.pop("last_quote", None)
+                st.session_state["selected_partner_ids"] = result.get("valid_partner_ids", [])
+                if result.get("selected_route"):
+                    st.session_state["last_route"] = result["selected_route"]
+                    st.session_state["selected_partner_ids"] = result["selected_route"]["selected_partner_ids"]
+                    st.session_state["selected_segment_pickup_modes"] = result["selected_route"]["segment_pickup_modes"]
+                if result.get("error"):
+                    _handle_route_error(result["message"])
+                    return
+            except ValueError as exc:
+                _handle_route_error(str(exc))
+                return
 
-            if compare:
+        simulation = st.session_state.get("last_simulation")
+        if not simulation:
+            st.info("Informe origem e destino para calcular a rota.")
+            return
+
+        comparison_df = pd.DataFrame(
+            [
+                {
+                    "Parceiro": row.partner_name,
+                    "Cidade/UF": f"{row.city}/{row.state}",
+                    "Regra ativa": row.rule_type,
+                    "Prazo": row.deadline_days,
+                    "Valor": row.price,
+                }
+                for row in simulation.get("results", [])
+            ]
+        )
+        st.markdown("#### Parceiros disponiveis")
+        if comparison_df.empty:
+            st.info("Nenhum parceiro conseguiu atender a rota diretamente.")
+        else:
+            st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
+        valid_ids = [partner.id for partner in active_partners]
+        sanitized = _sanitize_selected_partner_ids(st.session_state, valid_ids)
+        partner_lookup = {partner.id: partner for partner in active_partners}
+        selected_partner_ids = st.multiselect(
+            "Selecionar parceiros da rota em ordem",
+            options=valid_ids,
+            default=sanitized,
+            key="selected_partner_ids_multiselect",
+            format_func=lambda partner_id: f"{partner_lookup[partner_id].name} ({partner_lookup[partner_id].city}/{partner_lookup[partner_id].state})",
+        )
+        st.session_state["selected_partner_ids"] = [partner_id for partner_id in selected_partner_ids if partner_id in valid_ids]
+
+        if st.button("Montar rota multi-trecho", key="build_multi_leg_route", type="primary"):
+            selected_partners = [partner_lookup[partner_id] for partner_id in st.session_state["selected_partner_ids"]]
+            without_coordinates = [partner.name for partner in selected_partners if partner.latitude is None or partner.longitude is None]
+            if without_coordinates:
+                st.error(f"Parceiros sem coordenadas: {', '.join(without_coordinates)}")
+            else:
+                pickup_modes = st.session_state.get(
+                    "selected_segment_pickup_modes",
+                    default_segment_pickup_modes(len(selected_partners)),
+                )
                 try:
-                    result = freight_controller.simulate(
-                        origin_city=origin_city,
-                        origin_state=origin_state,
-                        destination_city=destination_city,
-                        destination_state=destination_state,
-                        optimization_mode=optimization_mode,
+                    route = freight_controller.simulate_multi_leg(
+                        origin_city=simulation["origin"].city,
+                        origin_state=simulation["origin"].state,
+                        destination_city=simulation["destination"].city,
+                        destination_state=simulation["destination"].state,
+                        partner_ids=st.session_state["selected_partner_ids"],
+                        segment_pickup_modes=pickup_modes,
+                        optimization_mode=st.session_state.get("optimization_mode", "cost"),
                     )
-                    st.session_state["last_simulation"] = result
-                    st.session_state.pop("last_route", None)
-                    st.session_state.pop("last_quote", None)
-                    st.session_state["selected_partner_ids"] = result.get("valid_partner_ids", [])
-                    st.session_state["optimization_mode"] = result.get("optimization_mode", optimization_mode)
-                    if result.get("selected_route"):
-                        st.session_state["last_route"] = result["selected_route"]
-                        st.session_state["selected_partner_ids"] = result["selected_route"]["selected_partner_ids"]
-                        st.session_state["selected_segment_pickup_modes"] = result["selected_route"][
-                            "segment_pickup_modes"
-                        ]
-                    if result.get("error"):
-                        _handle_route_error(result["message"])
+                    if route.get("error"):
+                        _handle_route_error(route["message"])
                         return
+                    st.session_state["last_route"] = route
+                    st.session_state["last_quote"] = None
+                    st.success("Rota multi-trecho calculada com sucesso.")
+                    st.rerun()
                 except ValueError as exc:
-                    _handle_route_error(str(exc))
-                    return
-                except Exception:
-                    _handle_route_error("Falha ao calcular a rota. Tente novamente com outro conjunto de parceiros.")
-                    return
+                    st.error(str(exc))
 
-    simulation = st.session_state.get("last_simulation")
-    if not simulation:
-        st.info("Informe origem e destino para calcular a distancia automaticamente.")
-        return
+        route = st.session_state.get("last_route")
+        if not route:
+            return
 
-    st.metric("Distancia direta", f"{simulation['distance_km']:,.2f} km")
-    if simulation.get("error"):
-        st.warning(simulation["message"])
-        if simulation.get("last_reachable_point") is not None:
-            last_point = simulation["last_reachable_point"]
-            st.caption(
-                f"Ultimo ponto alcancavel: {last_point.label} ({last_point.city}/{last_point.state})"
-            )
-        if simulation.get("closest_partners"):
-            closest_df = pd.DataFrame(simulation["closest_partners"])
-            st.dataframe(closest_df, use_container_width=True, hide_index=True)
-        st.info(simulation.get("suggested_action", "Cadastrar parceiro na regiao"))
-        return
-
-    comparison_df = pd.DataFrame(
-        [
-            {
-                "partner_id": row.partner_id,
-                "partner_name": row.partner_name,
-                "cidade": row.city,
-                "uf": row.state,
-                "distance_km": row.distance_km,
-                "price": row.price,
-                "deadline_days": row.deadline_days,
-                "rule_type": row.rule_type,
-            }
-            for row in simulation["results"]
-        ]
-    )
-    selected_strategy = simulation.get("selected_strategy")
-    if selected_strategy:
-        st.caption(
-            f"Estrategia selecionada: {selected_strategy} | Modo: "
-            f"{'Custo' if simulation.get('optimization_mode') == 'cost' else 'Tempo'}"
-        )
-    st.subheader("Comparativo de parceiros")
-    if not comparison_df.empty:
-        st.dataframe(comparison_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("Nenhum parceiro consegue finalizar a rota sozinho, mas a malha valida foi analisada.")
-
-    best_price = simulation["best_price"]
-    best_deadline = simulation["best_deadline"]
-    if best_price and best_deadline:
-        metric_col1, metric_col2 = st.columns(2)
-        metric_col1.metric("Melhor preco", f"R$ {best_price.price:,.2f}", best_price.partner_name)
-        metric_col2.metric(
-            "Melhor prazo", f"{best_deadline.deadline_days} dias", best_deadline.partner_name
-        )
-
-    valid_partner_ids = simulation.get("valid_partner_ids", [])
-    if valid_partner_ids:
-        st.caption(f"Parceiros validos para a rota atual: {len(valid_partner_ids)}")
-
-    route = st.session_state.get("last_route")
-    if route:
-        summary_cols = st.columns(3)
-        summary_cols[0].metric("Distancia total da rota", f"{route['total_distance_km']:,.2f} km")
-        summary_cols[1].metric("Custo total da rota", f"R$ {route['total_cost']:,.2f}")
-        summary_cols[2].metric("Prazo total", f"{route['total_time']} dias")
-        route_points_labels = " -> ".join(
-            f"{point.label} ({point.city}/{point.state})" for point in route["route_points"]
-        )
-        st.write(f"Rota gerada: {route_points_labels}")
-        st.caption(
-            "Modo atual: "
-            + ("override manual" if route.get("manual_override") else "geracao automatica")
-            + f" | Estrategia: {route.get('selected_strategy')}"
-        )
-        alternative_option = simulation.get("alternative_option")
-        if alternative_option:
-            st.caption(
-                f"Alternativa: {alternative_option['selected_strategy']} | "
-                f"R$ {alternative_option['total_cost']:,.2f} | {alternative_option['total_time']} dias"
-            )
-
-        st.subheader("Trechos calculados")
+        st.markdown("#### Trechos calculados")
         segments_df = pd.DataFrame(
             [
                 {
-                    "ordem": index,
-                    "partner": segment.partner_name,
-                    "origem": route["route_points"][0].label if index == 1 else route["route_points"][index].label,
-                    "destino": route["route_points"][index + 1].label,
-                    "distance_km": segment.distance_km,
-                    "price": segment.segment_cost,
-                    "segment_days": segment.segment_days,
-                    "pickup_mode": segment.pickup_mode,
-                    "total_cost": round(
-                        sum(item.segment_cost for item in route["route_segments"][:index]),
-                        2,
-                    ),
-                    "total_days": sum(item.segment_days for item in route["route_segments"][:index]),
-                    "rule_type": segment.rule_type,
+                    "Trecho": segment.segment_order,
+                    "Parceiro": segment.partner_name,
+                    "Origem": segment.origin_label,
+                    "Destino": segment.destination_label,
+                    "KM": segment.distance_km,
+                    "Valor": segment.price,
+                    "Prazo": segment.segment_days,
+                    "Regra": segment.rule_type,
                 }
-                for index, segment in enumerate(route["route_segments"], start=1)
+                for segment in route["segments"]
             ]
         )
         st.dataframe(segments_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Override manual opcional")
-    use_manual_override = st.checkbox(
-        "Selecionar parceiros manualmente",
-        key="use_manual_route_override",
-        value=False,
-    )
-    if use_manual_override:
-        valid_partner_lookup = {
-            partner.id: partner
-            for partner in active_partners
-            if partner.id in valid_partner_ids
-        }
-        partner_labels = {
-            partner.id: f"{partner.name} ({partner.city}/{partner.state})"
-            for partner in valid_partner_lookup.values()
-        }
-        valid_partner_ids = list(partner_labels.keys())
-        sanitized_default = [
-            partner_id
-            for partner_id in st.session_state.get("selected_partner_ids", [])
-            if partner_id in valid_partner_ids
-        ]
-        st.session_state["selected_partner_ids"] = sanitized_default
-        selected_partner_ids = st.multiselect(
-            "Parceiros da rota, em ordem",
-            options=valid_partner_ids,
-            default=sanitized_default,
-            format_func=lambda partner_id: partner_labels[partner_id],
-        )
-        st.session_state["selected_partner_ids"] = selected_partner_ids
-        default_pickup_modes = default_segment_pickup_modes(len(selected_partner_ids))
-        stored_pickup_modes = st.session_state.get("selected_segment_pickup_modes", [])
-        if len(stored_pickup_modes) != len(selected_partner_ids):
-            stored_pickup_modes = default_pickup_modes
-        selected_segment_pickup_modes: list[str] = []
-        if selected_partner_ids:
-            st.caption("Defina o pickup mode por trecho.")
-        for index, partner_id in enumerate(selected_partner_ids):
-            mode = st.selectbox(
-                f"{partner_labels[partner_id]}",
-                options=["HUB", "DIRECT"],
-                index=["HUB", "DIRECT"].index(stored_pickup_modes[index]),
-                key=f"pickup_mode_segment_{index}_{partner_id}",
-            )
-            selected_segment_pickup_modes.append(mode)
-        st.session_state["selected_segment_pickup_modes"] = selected_segment_pickup_modes
+        map_points = [(point.latitude, point.longitude) for point in route["route_points"]]
+        folium_map = folium.Map(location=map_center(map_points), zoom_start=5, tiles="CartoDB positron")
+        for point in route["route_points"]:
+            folium.Marker(location=[point.latitude, point.longitude], tooltip=point.label).add_to(folium_map)
+        folium.PolyLine(
+            [(point.latitude, point.longitude) for point in route["physical_path_points"]],
+            color="#185FA5",
+            weight=3,
+        ).add_to(folium_map)
+        if st_folium:
+            st_folium(folium_map, width=None, height=420)
+        else:
+            st.components.v1.html(folium_map._repr_html_(), height=420)
 
-        if st.button("Aplicar override manual", key="apply_manual_route_override"):
-            try:
-                route = freight_controller.simulate_multi_leg(
-                    origin_city=simulation["origin"].city,
-                    origin_state=simulation["origin"].state,
-                    destination_city=simulation["destination"].city,
-                    destination_state=simulation["destination"].state,
-                    partner_ids=selected_partner_ids,
-                    segment_pickup_modes=selected_segment_pickup_modes,
-                    optimization_mode=st.session_state.get("optimization_mode", "cost"),
-                )
-                if route.get("error"):
-                    _handle_route_error(route["message"])
-                    return
-                st.session_state["last_route"] = route
-                st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
-                st.session_state["selected_segment_pickup_modes"] = route["segment_pickup_modes"]
-                st.success("Rota manual calculada com sucesso.")
-                st.rerun()
-            except ValueError as exc:
-                _handle_route_error(str(exc))
-            except Exception:
-                _handle_route_error("Falha ao calcular a rota. Tente novamente com outro conjunto de parceiros.")
-    else:
-        if st.button("Recalcular rota automatica", key="rebuild_auto_route"):
-            try:
-                route = freight_controller.simulate_multi_leg(
-                    origin_city=simulation["origin"].city,
-                    origin_state=simulation["origin"].state,
-                    destination_city=simulation["destination"].city,
-                    destination_state=simulation["destination"].state,
-                    optimization_mode=st.session_state.get("optimization_mode", "cost"),
-                )
-                if route.get("error"):
-                    _handle_route_error(route["message"])
-                    return
-                st.session_state["last_route"] = route
-                st.session_state["selected_partner_ids"] = route["selected_partner_ids"]
-                st.session_state["selected_segment_pickup_modes"] = route["segment_pickup_modes"]
-                st.success("Rota automatica recalculada com sucesso.")
-                st.rerun()
-            except ValueError as exc:
-                _handle_route_error(str(exc))
-            except Exception:
-                _handle_route_error("Falha ao calcular a rota. Tente novamente com outro conjunto de parceiros.")
+        st.markdown("#### Painel de fechamento")
+        icms = st.number_input("ICMS (%)", min_value=0.0, value=float(st.session_state.get("quote_icms", 12.0)), step=0.5)
+        iss = st.number_input("ISS (%)", min_value=0.0, value=float(st.session_state.get("quote_iss", 5.0)), step=0.5)
+        margin = st.number_input("Margem (%)", min_value=0.0, value=float(st.session_state.get("quote_margin", 15.0)), step=0.5)
+        customer_name = st.text_input("Nome do cliente", value=st.session_state.get("quote_customer_name", ""))
+        st.session_state["quote_icms"] = icms
+        st.session_state["quote_iss"] = iss
+        st.session_state["quote_margin"] = margin
+        st.session_state["quote_customer_name"] = customer_name
+
+        freight_gross = round(sum(float(segment.price) for segment in route["segments"]), 2)
+        icms_value = round(freight_gross * (icms / 100), 2)
+        iss_value = round(freight_gross * (iss / 100), 2)
+        margin_value = round(freight_gross * (margin / 100), 2)
+        total_value = round(freight_gross + icms_value + iss_value + margin_value, 2)
+        quote_data = quote_controller.create_quote(
+            origin=f"{route['origin'].city}/{route['origin'].state}",
+            destination=f"{route['destination'].city}/{route['destination'].state}",
+            direct_distance_km=float(route["direct_distance_km"]),
+            segments=route["segments"],
+            tax_rate=(icms + iss) / 100,
+            margin_rate=margin / 100,
+            additional_fee=0.0,
+        )
+        st.session_state["last_quote"] = quote_data
+
+        summary_cols = st.columns(6)
+        summary_cols[0].metric("Frete bruto", f"R$ {freight_gross:,.2f}")
+        summary_cols[1].metric("ICMS", f"R$ {icms_value:,.2f}")
+        summary_cols[2].metric("ISS", f"R$ {iss_value:,.2f}")
+        summary_cols[3].metric("Margem", f"R$ {margin_value:,.2f}")
+        summary_cols[4].metric("Total ao cliente", f"R$ {total_value:,.2f}")
+        summary_cols[5].metric("Prazo total", f"{route['total_deadline_days']} dias")
+
+        pdf_bytes = quote_controller.export_pdf(quote_data)
+        excel_bytes = quote_controller.export_excel(quote_data)
+        buttons = st.columns(3)
+        buttons[0].download_button(
+            "Baixar PDF",
+            data=pdf_bytes,
+            file_name="proposta_frete.pdf",
+            mime="application/pdf",
+        )
+        buttons[1].download_button(
+            "Baixar Excel",
+            data=excel_bytes,
+            file_name="proposta_frete.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        if buttons[2].button("Fechar frete", key="close_freight_button", type="primary"):
+            quote = quote_repo.criar(
+                customer_name=customer_name,
+                origin=f"{route['origin'].city}/{route['origin'].state}",
+                destination=f"{route['destination'].city}/{route['destination'].state}",
+                route_label=" -> ".join(point.label for point in route["route_points"]),
+                partner_id=route["selected_partner_ids"][0] if route["selected_partner_ids"] else None,
+                partner_name=", ".join(segment.partner_name for segment in route["segments"]),
+                status="fechado",
+                freight_gross=freight_gross,
+                icms_rate=icms / 100,
+                icms_value=icms_value,
+                iss_rate=iss / 100,
+                iss_value=iss_value,
+                margin_rate=margin / 100,
+                margin_value=margin_value,
+                total_value=total_value,
+                total_deadline_days=route["total_deadline_days"],
+                direct_distance_km=float(route["direct_distance_km"]),
+                route_distance_km=float(route["total_distance_km"]),
+                items=route["segments"],
+            )
+            session.commit()
+            st.session_state["last_closed_quote_id"] = quote.id
+            st.success("Frete fechado! Dashboard atualizado.")
+            st.rerun()

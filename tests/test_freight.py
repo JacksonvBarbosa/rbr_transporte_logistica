@@ -578,7 +578,7 @@ def test_multi_leg_route_raises_when_no_valid_route_exists(monkeypatch):
     )
 
     assert route["error"] is True
-    assert route["message"] == "No partners available to cover this segment"
+    assert route["message"] == "Nenhum parceiro disponível para cobrir esse segmento"
     assert route["suggested_action"] == "Cadastrar parceiro na regiao"
 
 

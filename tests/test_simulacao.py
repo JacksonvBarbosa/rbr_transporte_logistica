@@ -7,6 +7,9 @@ from rbr_transporte_logistica.app.pages import simulacao
 
 
 class FakeColumn:
+    def __init__(self, parent=None) -> None:
+        self.parent = parent
+
     def text_input(self, _label: str, value: str = "", max_chars: int | None = None) -> str:
         return value
 
@@ -15,6 +18,13 @@ class FakeColumn:
 
     def selectbox(self, _label: str, options: list[str], index: int = 0, key: str | None = None) -> str:
         return options[index]
+
+    def button(self, _label: str, *_, key: str | None = None, **_kwargs) -> bool:
+        if self.parent is None:
+            return False
+        if key is not None and key in self.parent.clicked_buttons:
+            return True
+        return self.parent.submit_value
 
 
 class FakeForm:
@@ -45,14 +55,18 @@ class FakeStreamlit:
     def header(self, *_args, **_kwargs) -> None:
         return None
 
+    def markdown(self, *_args, **_kwargs) -> None:
+        return None
+
     def caption(self, *_args, **_kwargs) -> None:
         return None
 
     def form(self, _key: str):
         return FakeForm()
 
-    def columns(self, count: int):
-        return [FakeColumn() for _ in range(count)]
+    def columns(self, count):
+        size = count if isinstance(count, int) else len(count)
+        return [FakeColumn(self) for _ in range(size)]
 
     def form_submit_button(self, *_args, **_kwargs) -> bool:
         return self.submit_value
@@ -84,7 +98,7 @@ class FakeStreamlit:
     def error(self, message: str) -> None:
         self.error_messages.append(message)
 
-    def multiselect(self, label: str, options: list[int], default: list[int], format_func):
+    def multiselect(self, label: str, options: list[int], default: list[int], format_func, key: str | None = None):
         self.multiselect_calls.append(
             {
                 "label": label,
@@ -110,6 +124,12 @@ class FakeStreamlit:
         if default in options:
             return default
         return options[0]
+
+    def download_button(self, *_args, **_kwargs) -> None:
+        return None
+
+    def number_input(self, _label: str, min_value: float = 0.0, value: float = 0.0, step: float = 1.0):
+        return value
 
 
 class FakePartnerController:
@@ -162,43 +182,33 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
                 "origin": SimpleNamespace(city="Sao Paulo", state="SP"),
                 "destination": SimpleNamespace(city="Campinas", state="SP"),
             },
-                "last_route": {
-                    "total_distance_km": 120.0,
-                    "total_cost": 300.0,
-                    "total_time": 2,
-                    "total_deadline_days": 2,
-                    "route_points": [
-                        SimpleNamespace(label="Origem", city="Sao Paulo", state="SP"),
-                        SimpleNamespace(label="Partner C", city="Curitiba", state="PR"),
-                        SimpleNamespace(label="Destino", city="Campinas", state="SP"),
-                    ],
-                    "selected_partner_ids": [3],
-                    "route_segments": [],
-                    "segment_pickup_modes": ["DIRECT"],
-                    "manual_override": False,
-                    "selected_strategy": "MULTI",
-                },
             "selected_partner_ids": [999, 3],
         }
     )
 
     monkeypatch.setattr(simulacao, "st", st)
+    monkeypatch.setattr(simulacao, "apply_theme", lambda: None)
+    monkeypatch.setattr(simulacao, "sidebar_nav", lambda _page: None)
     monkeypatch.setattr(simulacao, "db_session", lambda: nullcontext(object()))
     monkeypatch.setattr(simulacao, "build_partner_controller", lambda _session: FakePartnerController(partners))
     monkeypatch.setattr(simulacao, "build_freight_controller", lambda _session: FakeFreightController())
+    monkeypatch.setattr(
+        simulacao,
+        "build_quote_controller",
+        lambda: SimpleNamespace(create_quote=lambda **_kwargs: {}, export_pdf=lambda _data: b"", export_excel=lambda _data: b""),
+    )
 
     simulacao.render()
 
     assert st.session_state["selected_partner_ids"] == [3]
     assert st.multiselect_calls == [
         {
-            "label": "Parceiros da rota, em ordem",
+            "label": "Selecionar parceiros da rota em ordem",
             "options": [1, 3],
             "default": [3],
             "formatted": ["Parceiro A (Campinas/SP)", "Parceiro C (Curitiba/PR)"],
         }
     ]
-    assert st.session_state["selected_segment_pickup_modes"] == ["DIRECT"]
 
 
 def test_render_shows_route_error_and_clears_last_route(monkeypatch):
@@ -214,9 +224,16 @@ def test_render_shows_route_error_and_clears_last_route(monkeypatch):
     )
 
     monkeypatch.setattr(simulacao, "st", st)
+    monkeypatch.setattr(simulacao, "apply_theme", lambda: None)
+    monkeypatch.setattr(simulacao, "sidebar_nav", lambda _page: None)
     monkeypatch.setattr(simulacao, "db_session", lambda: nullcontext(object()))
     monkeypatch.setattr(simulacao, "build_partner_controller", lambda _session: FakePartnerController(partners))
     monkeypatch.setattr(simulacao, "build_freight_controller", lambda _session: FailingFreightController())
+    monkeypatch.setattr(
+        simulacao,
+        "build_quote_controller",
+        lambda: SimpleNamespace(create_quote=lambda **_kwargs: {}, export_pdf=lambda _data: b"", export_excel=lambda _data: b""),
+    )
 
     simulacao.render()
 

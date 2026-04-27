@@ -2,106 +2,128 @@ from __future__ import annotations
 
 import folium
 import streamlit as st
-import streamlit.components.v1 as components
 
 from rbr_transporte_logistica.app.dependencies import build_partner_controller
+from rbr_transporte_logistica.app.theme import AZUL_CLARO, ROXO, TEAL, apply_theme, sidebar_nav
 from rbr_transporte_logistica.core.database import db_session
-from rbr_transporte_logistica.utils.geo_utils import map_center
+
+try:
+    from streamlit_folium import st_folium
+except Exception:  # pragma: no cover
+    st_folium = None
+
+REGION_COLORS = {
+    "NORTE": ROXO,
+    "NORDESTE": "#C76A16",
+    "CENTRO-OESTE": TEAL,
+    "SUDESTE": AZUL_CLARO,
+    "SUL": "#1F7A5A",
+}
 
 
 def render() -> None:
-    st.header("Mapa de Parceiros")
-    st.caption("Selecione parceiros pelo mapa e visualize os trechos da rota atual.")
+    apply_theme()
+    sidebar_nav("Mapa de Rotas")
+    st.markdown("### Mapa de Rotas")
 
     with db_session() as session:
         partner_controller = build_partner_controller(session)
-        partners = [
-            partner
-            for partner in partner_controller.list_partners()
-            if partner.latitude is not None and partner.longitude is not None
-        ]
+        partners = partner_controller.list_partners(active_only=False)
 
-    if not partners:
-        st.info("Cadastre parceiros para visualizar o mapa.")
-        return
+    filters = st.radio("Filtro", options=["Todos", "Ativos", "Com rota", "Sem coordenadas"], horizontal=True)
+    filtered_partners = _filter_partners(partners, filters)
 
-    simulation = st.session_state.get("last_simulation")
-    visible_partner_ids = set(simulation.get("valid_partner_ids", [])) \
-        if simulation else {partner.id for partner in partners}
-    filtered_partners = [partner for partner in partners if partner.id in visible_partner_ids]
-    if not filtered_partners:
-        filtered_partners = partners
-
-    partner_labels = {partner.id: f"{partner.name} ({partner.city}/{partner.state})"
-                      for partner in filtered_partners}
-    valid_partner_ids = list(partner_labels.keys())
-    sanitized_default = [
-        partner_id
-        for partner_id in st.session_state.get("selected_partner_ids", [])
-        if partner_id in valid_partner_ids
-    ]
-    st.session_state["selected_partner_ids"] = sanitized_default
-    selected_partner_ids = st.multiselect(
-        "Parceiros selecionados no mapa",
-        options=valid_partner_ids,
-        default=sanitized_default,
-        format_func=lambda partner_id: partner_labels[partner_id],
-    )
-    st.session_state["selected_partner_ids"] = selected_partner_ids
-
-    all_points = [(partner.latitude, partner.longitude) for partner in filtered_partners]
-    route = st.session_state.get("last_route")
-    if route:
-        all_points.extend((point.latitude, point.longitude) for point in route["physical_path_points"])
-
-    map_view = folium.Map(location=map_center(all_points), zoom_start=5, control_scale=True)
-
-    route_partner_ids = set(route.get("selected_partner_ids", [])) if route else set()
-    for partner in filtered_partners:
-        color = "green" if partner.id in selected_partner_ids else "blue"
-        if partner.id in route_partner_ids:
-            color = "red" if route.get("manual_override") else "darkgreen"
-        folium.Marker(
-            location=[partner.latitude, partner.longitude],
-            popup=f"{partner.name} | {partner.city}/{partner.state}",
-            tooltip=partner.name,
-            icon=folium.Icon(color=color, icon="truck", prefix="fa"),
-        ).add_to(map_view)
-
-    if route:
-        legend_added = set()
-        for index, segment in enumerate(route.get("route_segments", []), start=1):
-            start = route["route_points"][0] if index == 1 else route["route_points"][index]
-            end = route["route_points"][index + 1]
-            coordinates = [(start.latitude, start.longitude)]
-            if segment.pickup_mode == "HUB":
-                partner_point = route["route_points"][index]
-                coordinates.append((partner_point.latitude, partner_point.longitude))
-            coordinates.append((end.latitude, end.longitude))
-            color = "#f59e0b" if segment.pickup_mode == "HUB" else "#2563eb"
-            tooltip = (
-                f"Trecho {index}: {segment.partner_name} | "
-                f"{segment.pickup_mode} | "
-                f"{segment.distance_km:,.2f} km | "
-                f"{segment.segment_days} dias"
-            )
+    left, right = st.columns([3, 1])
+    with left:
+        route = st.session_state.get("last_route")
+        map_view = folium.Map(location=[-15.7, -47.9], zoom_start=5, tiles="CartoDB positron")
+        for partner in filtered_partners:
+            if partner.latitude is None or partner.longitude is None:
+                continue
+            popup_html = _partner_popup(partner)
+            folium.Marker(
+                location=[partner.latitude, partner.longitude],
+                popup=folium.Popup(popup_html, max_width=320),
+                tooltip=partner.name,
+                icon=folium.Icon(color="blue", icon="truck", prefix="fa"),
+            ).add_to(map_view)
+        if route:
+            st.session_state["last_route"] = route
             folium.PolyLine(
-                coordinates,
-                color=color,
-                weight=5,
-                opacity=0.9,
-                tooltip=tooltip,
+                [(point.latitude, point.longitude) for point in route["physical_path_points"]],
+                color="#185FA5",
+                weight=2.5,
+                dash_array="8 6",
             ).add_to(map_view)
-            if segment.pickup_mode not in legend_added:
-                legend_added.add(segment.pickup_mode)
-        for index, point in enumerate(route["physical_path_points"], start=1):
-            folium.CircleMarker(
-                location=[point.latitude, point.longitude],
-                radius=6,
-                color="orange" if route.get("manual_override") else "crimson",
-                fill=True,
-                fill_opacity=0.8,
-                popup=f"#{index} {point.label} - {point.city}/{point.state}",
-            ).add_to(map_view)
+        folium.map.Marker(
+            [-32, -70],
+            icon=folium.DivIcon(
+                html="<div style='background:white;padding:10px;border:1px solid #dce5f0;border-radius:10px;font-size:12px;'>"
+                "<strong>Legenda</strong><br>Norte: roxo<br>Nordeste: laranja<br>Centro-Oeste: verde<br>Sudeste: azul<br>Sul: verde escuro"
+                "</div>"
+            ),
+        ).add_to(map_view)
+        if st_folium:
+            result = st_folium(map_view, width=None, height=520, returned_objects=["last_object_clicked"])
+            clicked = (result or {}).get("last_object_clicked")
+            if clicked and "lat" in clicked and "lng" in clicked:
+                st.session_state["selected_map_coords"] = (clicked["lat"], clicked["lng"])
+        else:
+            st.components.v1.html(map_view._repr_html_(), height=520)
 
-    components.html(map_view._repr_html_(), height=560)
+    with right:
+        st.markdown("#### Detalhes")
+        selected_partner = _resolve_selected_partner(filtered_partners)
+        if selected_partner is None:
+            for partner in filtered_partners:
+                dot = "●"
+                st.markdown(f"{dot} **{partner.name}**  \n{partner.city}/{partner.state}")
+        else:
+            st.markdown(f"**{selected_partner.name}**")
+            st.write(f"{selected_partner.city}/{selected_partner.state}")
+            if selected_partner.latitude is not None and selected_partner.longitude is not None:
+                st.caption(f"{selected_partner.latitude:.6f}, {selected_partner.longitude:.6f}")
+            st.caption(f"Status: {'Ativo' if selected_partner.active else 'Inativo'}")
+            if selected_partner.freight_rules:
+                chips = "".join(f"<span class='rbr-chip'>{rule.rule_type}</span>" for rule in selected_partner.freight_rules)
+                st.markdown(chips, unsafe_allow_html=True)
+            if st.button("Simular rota com este parceiro →", key=f"simulate_from_map_{selected_partner.id}", type="primary"):
+                st.session_state["preselected_partner"] = selected_partner.id
+                st.session_state["selected_partner_ids"] = [selected_partner.id]
+                st.session_state["current_page"] = "Simulação"
+                st.rerun()
+
+
+def _resolve_selected_partner(partners: list) -> object | None:
+    coords = st.session_state.get("selected_map_coords")
+    if not coords:
+        return None
+    lat, lng = coords
+    for partner in partners:
+        if partner.latitude is None or partner.longitude is None:
+            continue
+        if round(float(partner.latitude), 4) == round(float(lat), 4) and round(float(partner.longitude), 4) == round(float(lng), 4):
+            return partner
+    return None
+
+
+def _filter_partners(partners: list, mode: str) -> list:
+    route_ids = set((st.session_state.get("last_route") or {}).get("selected_partner_ids", []))
+    if mode == "Ativos":
+        return [partner for partner in partners if partner.active]
+    if mode == "Com rota":
+        return [partner for partner in partners if partner.id in route_ids]
+    if mode == "Sem coordenadas":
+        return [partner for partner in partners if partner.latitude is None or partner.longitude is None]
+    return partners
+
+
+def _partner_popup(partner) -> str:
+    rule_list = "".join(f"<li>{rule.rule_type} • {rule.deadline_days} dias • {float(rule.max_km):,.0f} km</li>" for rule in partner.freight_rules)
+    return (
+        f"<strong>{partner.name}</strong><br>"
+        f"{partner.city}/{partner.state}<br>"
+        f"Status: {'Ativo' if partner.active else 'Inativo'}<br>"
+        f"Regras: {len(partner.freight_rules)}"
+        f"<ul>{rule_list}</ul>"
+    )

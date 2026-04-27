@@ -156,7 +156,7 @@ def test_build_route_raises_when_route_is_impossible(monkeypatch):
         _distance_fn({((0.0, 0.0), (30.0, 30.0)): 120.0}),
     )
 
-    with pytest.raises(ValueError, match="No partners available to cover this segment"):
+    with pytest.raises(ValueError, match="Nenhum parceiro disponível para cobrir esse segmento"):
         route_builder.build_route(origin, destination, [partner_a])
 
 
@@ -192,6 +192,6 @@ def test_build_route_returns_informative_progressive_error(monkeypatch):
     with pytest.raises(route_builder.RouteBuildError) as exc_info:
         route_builder.build_route(origin, destination, partners)
 
-    assert "No partners available beyond Guarulhos/SP" in str(exc_info.value)
+    assert "Nenhum parceiro disponível pertence a Guarulhos/SP" in str(exc_info.value)
     assert exc_info.value.max_reachable_distance_km == 50.0
     assert len(exc_info.value.closest_partners) == 3
