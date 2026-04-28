@@ -63,7 +63,13 @@ def apply_column_mapping(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFr
 def render() -> None:
     apply_theme()
     sidebar_nav("Upload de Tabelas")
-    st.markdown("### Upload de Tabelas")
+    st.header("Upload de Tabelas")
+    st.info(
+        "📎 Use esta página para importar a planilha enviada por um parceiro durante o cadastro. "
+        "O arquivo deve conter as colunas: **km_de, km_ate, valor_fixo, valor_km_excedente, prazo_dias**. "
+        "Após a importação, as regras do parceiro serão atualizadas automaticamente.",
+        icon="ℹ️",
+    )
 
     with db_session() as session:
         controller = build_partner_controller(session)
@@ -81,6 +87,7 @@ def render() -> None:
         selected_label = st.selectbox("Parceiro destino", list(partner_options.keys()))
         selected_partner = partner_options[selected_label]
         uploaded_file = st.file_uploader("Arquivo da tabela", type=["xlsx", "csv", "pdf"])
+        st.caption("Formatos aceitos: XLSX, CSV (separador configurável) e PDF com tabela estruturada.")
         description = st.text_input("Descricao da tabela", value="")
         csv_separator = (
             st.text_input("Separador CSV", value=";")

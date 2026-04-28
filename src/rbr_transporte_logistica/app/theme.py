@@ -34,21 +34,60 @@ def apply_theme() -> None:
         .stApp {{
             background: {CINZA_BG};
         }}
-        .stAppHeader {{
-            display: none;
+        header[data-testid="stHeader"] {{
+            display: none !important;
+        }}
+        [data-testid="collapsedControl"] {{
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            color: {AZUL_MEDIO} !important;
         }}
         section[data-testid="stSidebar"] {{
             background: {AZUL_ESCURO};
             color: white;
-            padding-top: 0.5rem;
+            padding-top: 0.25rem;
         }}
         section[data-testid="stSidebar"] * {{
             color: white;
         }}
+        section[data-testid="stSidebar"] > div > div > div {{
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+        }}
         section[data-testid="stSidebar"] .st-emotion-cache-16txtl3,
         section[data-testid="stSidebar"] .st-emotion-cache-1cypcdb {{
-            padding-top: 0.5rem;
+            padding-top: 0.25rem;
             padding-bottom: 0.75rem;
+        }}
+        section[data-testid="stSidebar"] .stButton > button {{
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            color: #85B7EB !important;
+            text-align: left !important;
+            width: 100% !important;
+            padding: 8px 10px !important;
+            border-radius: 6px !important;
+            font-size: 12px !important;
+            font-weight: 400 !important;
+        }}
+        section[data-testid="stSidebar"] .stButton > button:hover {{
+            background: rgba(55,138,221,0.15) !important;
+            color: #ffffff !important;
+        }}
+        section[data-testid="stSidebar"] .stButton > button[data-active="true"],
+        section[data-testid="stSidebar"] .nav-active button {{
+            background: rgba(55,138,221,0.22) !important;
+            color: #ffffff !important;
+            font-weight: 500 !important;
+        }}
+        section[data-testid="stSidebar"] .nav-danger button {{
+            color: #F09595 !important;
+        }}
+        section[data-testid="stSidebar"] .nav-danger button:hover {{
+            background: rgba(242,117,117,0.12) !important;
         }}
         .block-container {{
             padding-top: 1.25rem;
@@ -67,24 +106,24 @@ def apply_theme() -> None:
             padding: 16px;
         }}
         .rbr-chip {{
-            display:inline-block;
-            padding:4px 10px;
-            border-radius:999px;
-            font-size:12px;
-            font-weight:600;
-            background:{AZUL_SUAVE};
-            color:{AZUL_MEDIO};
-            margin-right:6px;
-            margin-bottom:6px;
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            background: {AZUL_SUAVE};
+            color: {AZUL_MEDIO};
+            margin-right: 6px;
+            margin-bottom: 6px;
         }}
         .rbr-badge {{
-            display:inline-block;
-            padding:5px 10px;
-            border-radius:999px;
-            background:{AZUL_SUAVE};
-            color:{AZUL_MEDIO};
-            font-size:12px;
-            font-weight:600;
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: {AZUL_SUAVE};
+            color: {AZUL_MEDIO};
+            font-size: 12px;
+            font-weight: 600;
         }}
         .stButton > button, .stDownloadButton > button {{
             background: {AZUL_MEDIO};
@@ -108,17 +147,7 @@ def apply_theme() -> None:
             margin-top: 10px;
             margin-bottom: 4px;
             font-weight: 700;
-        }}
-        .rbr-logo {{
-            font-size: 24px;
-            font-weight: 800;
-            color: white;
-            margin-bottom: 2px;
-        }}
-        .rbr-logo-sub {{
-            color: #A9C8EA;
-            font-size: 13px;
-            margin-bottom: 14px;
+            padding: 0 10px;
         }}
         </style>
         """,
@@ -127,21 +156,47 @@ def apply_theme() -> None:
 
 
 def sidebar_nav(current_page: str) -> None:
+    st.sidebar.markdown(
+        """
+<div style="padding: 18px 14px 14px; border-bottom: 0.5px solid rgba(255,255,255,0.1); margin-bottom: 4px;">
+    <div style="
+        width: 34px; height: 34px;
+        background: #185FA5;
+        border-radius: 8px;
+        display: flex; align-items: center; justify-content: center;
+        margin-bottom: 8px;
+    ">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="white">
+            <path d="M2 15 L6 6 L10 11 L13 5 L18 13 Z"/>
+        </svg>
+    </div>
+    <div style="font-size:13px; font-weight:500; color:#ffffff; line-height:1.2;">RBR Logística</div>
+    <div style="font-size:10px; color:#85B7EB; margin-top:2px;">Sistema de Fretes</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
     with st.sidebar:
-        st.markdown('<div class="rbr-logo">RBR Logística</div>', unsafe_allow_html=True)
-        st.markdown('<div class="rbr-logo-sub">Operação, simulação e documentos</div>', unsafe_allow_html=True)
         current_section = None
         for section, page in PAGE_ORDER:
             if section != current_section:
                 st.markdown(f'<div class="rbr-nav-title">{section}</div>', unsafe_allow_html=True)
                 current_section = section
-            label = page
-            kind = "primary" if page == current_page else "secondary"
+
+            wrapper_classes: list[str] = []
+            if page == current_page:
+                wrapper_classes.append("nav-active")
             if page == "Excluir Parceiro":
+                wrapper_classes.append("nav-danger")
+
+            if wrapper_classes:
                 st.markdown(
-                    f"<div style='color:{VERMELHO};font-weight:600;margin:.25rem 0 .15rem 0'>{label}</div>",
+                    f"<div class=\"{' '.join(wrapper_classes)}\">",
                     unsafe_allow_html=True,
                 )
-            if st.button(label, key=f"nav_{page}", use_container_width=True, type=kind):
+            if st.button(page, key=f"nav_{page}", use_container_width=True):
                 st.session_state["current_page"] = page
                 st.rerun()
+            if wrapper_classes:
+                st.markdown("</div>", unsafe_allow_html=True)
