@@ -113,11 +113,16 @@ class FakeStreamlit:
         key = _kwargs.get("key")
         return key in self.clicked_buttons
 
+    def radio(self, _label: str, options: list[str], **_kwargs):
+        return options[0]
+
     def checkbox(self, *_args, **_kwargs) -> bool:
         return self.checkbox_value
 
-    def selectbox(self, label: str, options: list[str], index: int = 0, key: str | None = None):
+    def selectbox(self, label: str, options: list[str], index: int | None = 0, key: str | None = None, **_kwargs):
         self.selectbox_calls.append({"label": label, "options": options, "index": index, "key": key})
+        if index is None:
+            return None
         return options[index]
 
     def segmented_control(self, _label: str, options: list[str], format_func=None, default=None):
@@ -192,6 +197,7 @@ def test_render_sanitizes_selected_partner_ids_before_multiselect(monkeypatch):
     monkeypatch.setattr(simulacao, "db_session", lambda: nullcontext(object()))
     monkeypatch.setattr(simulacao, "build_partner_controller", lambda _session: FakePartnerController(partners))
     monkeypatch.setattr(simulacao, "build_freight_controller", lambda _session: FakeFreightController())
+    monkeypatch.setattr(simulacao, "build_cliente_repository", lambda _session: SimpleNamespace(listar=lambda: []))
     monkeypatch.setattr(
         simulacao,
         "build_quote_controller",
@@ -229,6 +235,8 @@ def test_render_shows_route_error_and_clears_last_route(monkeypatch):
     monkeypatch.setattr(simulacao, "db_session", lambda: nullcontext(object()))
     monkeypatch.setattr(simulacao, "build_partner_controller", lambda _session: FakePartnerController(partners))
     monkeypatch.setattr(simulacao, "build_freight_controller", lambda _session: FailingFreightController())
+    monkeypatch.setattr(simulacao, "build_cliente_repository", lambda _session: SimpleNamespace(listar=lambda: []))
+    monkeypatch.setattr(simulacao, "get_coordinates", lambda city, state: (0.0, 0.0))
     monkeypatch.setattr(
         simulacao,
         "build_quote_controller",

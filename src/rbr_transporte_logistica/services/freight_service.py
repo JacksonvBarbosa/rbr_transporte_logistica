@@ -38,10 +38,13 @@ class FreightService:
         destination_city: str,
         destination_state: str,
         optimization_mode: str = "cost",
+        *,
+        origin_coords: tuple[float, float] | None = None,
+        destination_coords: tuple[float, float] | None = None,
     ) -> dict[str, Any]:
         optimization_mode = self._normalize_optimization_mode(optimization_mode)
-        origin = self._build_point("Origem", origin_city, origin_state)
-        destination = self._build_point("Destino", destination_city, destination_state)
+        origin = self._build_point("Origem", origin_city, origin_state, origin_coords)
+        destination = self._build_point("Destino", destination_city, destination_state, destination_coords)
         km = self._calculate_direct_distance(origin, destination)
         if km <= 0:
             raise ValueError("Distancia precisa ser maior que zero.")
@@ -117,10 +120,13 @@ class FreightService:
         partner_ids: list[int] | None = None,
         segment_pickup_modes: list[str] | None = None,
         optimization_mode: str = "cost",
+        *,
+        origin_coords: tuple[float, float] | None = None,
+        destination_coords: tuple[float, float] | None = None,
     ) -> dict[str, Any]:
         optimization_mode = self._normalize_optimization_mode(optimization_mode)
-        origin = self._build_point("Origem", origin_city, origin_state)
-        destination = self._build_point("Destino", destination_city, destination_state)
+        origin = self._build_point("Origem", origin_city, origin_state, origin_coords)
+        destination = self._build_point("Destino", destination_city, destination_state, destination_coords)
         direct_distance_km = self._calculate_direct_distance(origin, destination)
         manual_override = partner_ids is not None
         partners = self._load_route_partners(partner_ids)
@@ -611,8 +617,16 @@ class FreightService:
         )
 
     @staticmethod
-    def _build_point(label: str, city: str, state: str) -> RoutePoint:
-        latitude, longitude = get_coordinates(city, state)
+    def _build_point(
+        label: str,
+        city: str,
+        state: str,
+        coords: tuple[float, float] | None = None,
+    ) -> RoutePoint:
+        if coords is None:
+            latitude, longitude = get_coordinates(city, state)
+        else:
+            latitude, longitude = float(coords[0]), float(coords[1])
         return RoutePoint(
             label=label,
             city=city.strip(),

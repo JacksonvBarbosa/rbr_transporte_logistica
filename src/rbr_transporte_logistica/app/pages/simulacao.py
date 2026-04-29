@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from rbr_transporte_logistica.app.dependencies import (
+    build_cliente_repository,
     build_freight_controller,
     build_partner_controller,
     build_quote_controller,
@@ -13,7 +14,11 @@ from rbr_transporte_logistica.app.theme import apply_theme, sidebar_nav
 from rbr_transporte_logistica.core.database import db_session
 from rbr_transporte_logistica.repositories.quote_repository import CotacaoRepo
 from rbr_transporte_logistica.services.route_builder import default_segment_pickup_modes
-from rbr_transporte_logistica.utils.geo_utils import map_center
+from rbr_transporte_logistica.utils.geo_utils import (
+    get_coordinates,
+    get_coordinates_full_address,
+    map_center,
+)
 
 try:
     from streamlit_folium import st_folium
@@ -42,26 +47,74 @@ def render() -> None:
         partner_controller = build_partner_controller(session)
         quote_controller = build_quote_controller()
         quote_repo = CotacaoRepo(session)
+        cliente_repo = build_cliente_repository(session)
         active_partners = partner_controller.list_partners(active_only=True)
 
-        row = st.columns([2, 1, 2, 1, 1])
-        origin_city = row[0].text_input("Cidade origem", value=st.session_state.get("origin_city", "Sao Paulo"))
-        origin_state = row[1].text_input("UF origem", value=st.session_state.get("origin_state", "SP"), max_chars=2)
-        destination_city = row[2].text_input("Cidade destino", value=st.session_state.get("destination_city", "Rio de Janeiro"))
-        destination_state = row[3].text_input("UF destino", value=st.session_state.get("destination_state", "RJ"), max_chars=2)
-        if row[4].button("Calcular ->", key="calculate_simulation", type="primary"):
+        modo_endereco = st.radio(
+            "Precisao da rota",
+            ["Cidade / UF", "Endereco completo"],
+            horizontal=True,
+            help="Modo cidade usa geocodificacao por municipio. Modo endereco usa o CEP/logradouro exato.",
+            index=0 if st.session_state.get("modo_endereco", "Cidade / UF") == "Cidade / UF" else 1,
+        )
+        st.session_state["modo_endereco"] = modo_endereco
+
+        if modo_endereco == "Endereco completo":
+            origem_cols = st.columns([2, 2, 1, 1, 1])
+            end_origem = origem_cols[0].text_input("Endereco origem", value=st.session_state.get("end_origem", ""))
+            cidade_origem = origem_cols[1].text_input("Cidade origem", value=st.session_state.get("origin_city", "Sao Paulo"))
+            uf_origem = origem_cols[2].text_input("UF origem", value=st.session_state.get("origin_state", "SP"), max_chars=2)
+            cep_origem = origem_cols[3].text_input("CEP origem", value=st.session_state.get("cep_origem", ""))
+            _ = origem_cols[4]
+
+            destino_cols = st.columns([2, 2, 1, 1, 1])
+            end_destino = destino_cols[0].text_input("Endereco destino", value=st.session_state.get("end_destino", ""))
+            cidade_destino = destino_cols[1].text_input("Cidade destino", value=st.session_state.get("destination_city", "Rio de Janeiro"))
+            uf_destino = destino_cols[2].text_input("UF destino", value=st.session_state.get("destination_state", "RJ"), max_chars=2)
+            cep_destino = destino_cols[3].text_input("CEP destino", value=st.session_state.get("cep_destino", ""))
+            calculate_clicked = destino_cols[4].button("Calcular ->", key="calculate_simulation", type="primary")
+        else:
+            row = st.columns([2, 1, 2, 1, 1])
+            end_origem = ""
+            cep_origem = ""
+            end_destino = ""
+            cep_destino = ""
+            cidade_origem = row[0].text_input("Cidade origem", value=st.session_state.get("origin_city", "Sao Paulo"))
+            uf_origem = row[1].text_input("UF origem", value=st.session_state.get("origin_state", "SP"), max_chars=2)
+            cidade_destino = row[2].text_input("Cidade destino", value=st.session_state.get("destination_city", "Rio de Janeiro"))
+            uf_destino = row[3].text_input("UF destino", value=st.session_state.get("destination_state", "RJ"), max_chars=2)
+            calculate_clicked = row[4].button("Calcular ->", key="calculate_simulation", type="primary")
+
+        if calculate_clicked:
             try:
+                if modo_endereco == "Endereco completo":
+                    orig_lat, orig_lon = get_coordinates_full_address(end_origem, cidade_origem, uf_origem, cep_origem)
+                    dest_lat, dest_lon = get_coordinates_full_address(end_destino, cidade_destino, uf_destino, cep_destino)
+                else:
+                    orig_lat, orig_lon = get_coordinates(cidade_origem, uf_origem)
+                    dest_lat, dest_lon = get_coordinates(cidade_destino, uf_destino)
+
+                st.session_state["origin_city"] = cidade_origem
+                st.session_state["origin_state"] = uf_origem
+                st.session_state["destination_city"] = cidade_destino
+                st.session_state["destination_state"] = uf_destino
+                st.session_state["end_origem"] = end_origem
+                st.session_state["cep_origem"] = cep_origem
+                st.session_state["end_destino"] = end_destino
+                st.session_state["cep_destino"] = cep_destino
+                st.session_state["origem_coords"] = (orig_lat, orig_lon)
+                st.session_state["destino_coords"] = (dest_lat, dest_lon)
+                st.session_state["modo_endereco_atual"] = modo_endereco
+
                 result = freight_controller.simulate(
-                    origin_city=origin_city,
-                    origin_state=origin_state,
-                    destination_city=destination_city,
-                    destination_state=destination_state,
+                    origin_city=cidade_origem,
+                    origin_state=uf_origem,
+                    destination_city=cidade_destino,
+                    destination_state=uf_destino,
                     optimization_mode=st.session_state.get("optimization_mode", "cost"),
+                    origin_coords=(orig_lat, orig_lon),
+                    destination_coords=(dest_lat, dest_lon),
                 )
-                st.session_state["origin_city"] = origin_city
-                st.session_state["origin_state"] = origin_state
-                st.session_state["destination_city"] = destination_city
-                st.session_state["destination_state"] = destination_state
                 st.session_state["last_simulation"] = result
                 st.session_state.pop("last_route", None)
                 st.session_state.pop("last_quote", None)
@@ -131,6 +184,8 @@ def render() -> None:
                         partner_ids=st.session_state["selected_partner_ids"],
                         segment_pickup_modes=pickup_modes,
                         optimization_mode=st.session_state.get("optimization_mode", "cost"),
+                        origin_coords=st.session_state.get("origem_coords"),
+                        destination_coords=st.session_state.get("destino_coords"),
                     )
                     if route.get("error"):
                         _handle_route_error(route["message"])
@@ -182,11 +237,26 @@ def render() -> None:
         icms = st.number_input("ICMS (%)", min_value=0.0, value=float(st.session_state.get("quote_icms", 12.0)), step=0.5)
         iss = st.number_input("ISS (%)", min_value=0.0, value=float(st.session_state.get("quote_iss", 5.0)), step=0.5)
         margin = st.number_input("Margem (%)", min_value=0.0, value=float(st.session_state.get("quote_margin", 15.0)), step=0.5)
-        customer_name = st.text_input("Nome do cliente", value=st.session_state.get("quote_customer_name", ""))
         st.session_state["quote_icms"] = icms
         st.session_state["quote_iss"] = iss
         st.session_state["quote_margin"] = margin
-        st.session_state["quote_customer_name"] = customer_name
+
+        clientes = cliente_repo.listar()
+        cliente_selecionado = None
+        if not clientes:
+            st.warning("Nenhum cliente cadastrado. Cadastre um cliente antes de fechar o frete.")
+            if st.button("Ir para cadastro de clientes", key="go_to_clientes"):
+                st.session_state["current_page"] = "Clientes"
+                st.rerun()
+        else:
+            opcoes = {f"{cliente.nome} - {cliente.cpf_cnpj or cliente.email or 'sem doc'}": cliente for cliente in clientes}
+            label_sel = st.selectbox(
+                "Cliente *",
+                options=list(opcoes.keys()),
+                index=None,
+                placeholder="Selecione o cliente...",
+            )
+            cliente_selecionado = opcoes[label_sel] if label_sel else None
 
         freight_gross = round(sum(float(segment.price) for segment in route["segments"]), 2)
         icms_value = round(freight_gross * (icms / 100), 2)
@@ -227,9 +297,10 @@ def render() -> None:
             file_name="proposta_frete.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        if buttons[2].button("Fechar frete", key="close_freight_button", type="primary"):
+        fechar_disabled = cliente_selecionado is None
+        if buttons[2].button("✅ Fechar frete", key="close_freight_button", type="primary", disabled=fechar_disabled):
             quote = quote_repo.criar(
-                customer_name=customer_name,
+                customer_name=cliente_selecionado.nome if cliente_selecionado else "",
                 origin=f"{route['origin'].city}/{route['origin'].state}",
                 destination=f"{route['destination'].city}/{route['destination'].state}",
                 route_label=" -> ".join(point.label for point in route["route_points"]),
@@ -249,6 +320,9 @@ def render() -> None:
                 route_distance_km=float(route["total_distance_km"]),
                 items=route["segments"],
             )
+            if cliente_selecionado is not None:
+                quote.cliente_id = cliente_selecionado.id
+                quote.customer_name = cliente_selecionado.nome
             session.commit()
             st.session_state["last_closed_quote_id"] = quote.id
             st.success("Frete fechado! Dashboard atualizado.")

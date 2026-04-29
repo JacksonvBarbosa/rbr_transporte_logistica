@@ -50,7 +50,8 @@ def render() -> None:
                 edit_cols = st.columns(4)
                 edit_name = edit_cols[0].text_input("Nome", value=partner.name, key=f"partner_name_{partner.id}")
                 edit_city = edit_cols[1].text_input("Cidade", value=partner.city, key=f"partner_city_{partner.id}")
-                edit_state = edit_cols[2].text_input("UF", value=partner.state, max_chars=2, key=f"partner_state_{partner.id}")
+                edit_state = edit_cols[2].text_input("UF", value=partner.state, max_chars=2,
+                                                     key=f"partner_state_{partner.id}")
                 edit_active = edit_cols[3].checkbox("Ativo", value=partner.active, key=f"partner_active_{partner.id}")
                 action_cols = st.columns(2)
                 if action_cols[0].button("Salvar alterações", key=f"save_partner_{partner.id}"):
@@ -131,21 +132,28 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
         index=["LINEAR", "FIXED", "TIERED"].index(existing_rule_type),
     )
     max_km_default = float(rule.max_km if rule else 300.0)
-    max_km = float(col2.number_input("Cobertura maxima (km)", min_value=1.0, value=max_km_default, step=10.0, key=f"max_km_{prefix}"))
+    max_km = float(col2.number_input("Cobertura maxima (km)", min_value=1.0,
+                                     value=max_km_default, step=10.0, key=f"max_km_{prefix}"))
     st.caption(f"Prazo calculado automaticamente: {PartnerService._calculate_rule_deadline_days(max_km)} dias")
 
     if rule_type == "LINEAR":
         linear_cols = st.columns(2)
         return {
             "rule_type": "LINEAR",
-            "base_price": float(linear_cols[0].number_input("Preco base", min_value=0.0, value=float(rule.base_price if rule else 100.0), step=10.0, key=f"base_{prefix}")),
-            "price_per_km": float(linear_cols[1].number_input("Preco por km", min_value=0.0, value=float(rule.price_per_km if rule else 1.5), step=0.1, key=f"price_km_{prefix}")),
+            "base_price": float(linear_cols[0].number_input("Preco base", min_value=0.0,
+                                                            value=float(rule.base_price if rule else 100.0),
+                                                            step=10.0, key=f"base_{prefix}")),
+            "price_per_km": float(linear_cols[1].number_input("Preco por km", min_value=0.0,
+                                                              value=float(rule.price_per_km if rule else 1.5),
+                                                              step=0.1, key=f"price_km_{prefix}")),
             "max_km": max_km,
             "extra_config": None,
         }
 
     if rule_type == "FIXED":
-        fixed_price = float(st.number_input("Preco fixo", min_value=0.0, value=float(existing_config.get("fixed_price", 250.0)), step=10.0, key=f"fixed_price_{prefix}"))
+        fixed_price = float(st.number_input("Preco fixo", min_value=0.0,
+                                            value=float(existing_config.get("fixed_price", 250.0)),
+                                            step=10.0, key=f"fixed_price_{prefix}"))
         return {
             "rule_type": "FIXED",
             "base_price": 0.0,
@@ -154,16 +162,22 @@ def _render_rule_fields(prefix: str, rule=None) -> dict[str, Any]:
             "extra_config": {"fixed_price": fixed_price},
         }
 
-    default_tiers = existing_config.get("tiers", [{"up_to_km": 100.0, "price": 200.0}, {"up_to_km": 300.0, "price": 420.0}])
-    tier_count = int(st.number_input("Quantidade de faixas", min_value=1, max_value=5, value=len(default_tiers), step=1, key=f"tier_count_{prefix}"))
+    default_tiers = existing_config.get("tiers", [{"up_to_km": 100.0, "price": 200.0},
+                                        {"up_to_km": 300.0, "price": 420.0}])
+    tier_count = int(st.number_input("Quantidade de faixas", min_value=1, max_value=5,
+                                     value=len(default_tiers), step=1, key=f"tier_count_{prefix}"))
     tiers = []
     for index in range(tier_count):
         tier = default_tiers[index] if index < len(default_tiers) else {"up_to_km": 100.0, "price": 150.0}
         tier_cols = st.columns(2)
         tiers.append(
             {
-                "up_to_km": float(tier_cols[0].number_input(f"Faixa {index + 1} ate km", min_value=1.0, value=float(tier["up_to_km"]), step=10.0, key=f"tier_km_{prefix}_{index}")),
-                "price": float(tier_cols[1].number_input(f"Preco faixa {index + 1}", min_value=0.0, value=float(tier["price"]), step=10.0, key=f"tier_price_{prefix}_{index}")),
+                "up_to_km": float(tier_cols[0].number_input(f"Faixa {index + 1} ate km", min_value=1.0,
+                                                            value=float(tier["up_to_km"]),
+                                                            step=10.0, key=f"tier_km_{prefix}_{index}")),
+                "price": float(tier_cols[1].number_input(f"Preco faixa {index + 1}", min_value=0.0,
+                                                         value=float(tier["price"]),
+                                                         step=10.0, key=f"tier_price_{prefix}_{index}")),
             }
         )
     return {

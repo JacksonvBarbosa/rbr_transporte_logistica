@@ -38,6 +38,27 @@ class Partner(Base):
     )
 
 
+class Cliente(Base):
+    __tablename__ = "clientes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    nome: Mapped[str] = mapped_column(String(200), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    telefone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    cpf_cnpj: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)
+    endereco: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    cidade: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    uf: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    cotacoes: Mapped[list["Quote"]] = relationship(
+        "Quote",
+        back_populates="cliente",
+        lazy="selectin",
+    )
+
+
 class FreightRule(Base):
     __tablename__ = "freight_rules"
 
@@ -65,6 +86,7 @@ class Quote(Base):
     destination: Mapped[str] = mapped_column(String(255), nullable=False)
     route_label: Mapped[str] = mapped_column(String(255), nullable=False)
     partner_id: Mapped[int | None] = mapped_column(ForeignKey("partners.id"), nullable=True)
+    cliente_id: Mapped[int | None] = mapped_column(ForeignKey("clientes.id"), nullable=True)
     partner_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="aberto", index=True)
     freight_gross: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
@@ -81,6 +103,7 @@ class Quote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
     partner: Mapped[Partner | None] = relationship("Partner", back_populates="quotes")
+    cliente: Mapped[Cliente | None] = relationship("Cliente", back_populates="cotacoes")
     items: Mapped[list["QuoteItem"]] = relationship(
         "QuoteItem",
         back_populates="quote",

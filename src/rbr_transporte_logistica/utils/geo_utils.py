@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from math import asin, cos, radians, sin, sqrt
+import time
 from typing import Iterable
 
 from geopy.distance import geodesic
@@ -23,6 +24,27 @@ def get_coordinates(city: str, state: str) -> tuple[float, float]:
     if not location:
         raise ValueError(f"Localidade nao encontrada para '{city}/{state}'.")
     return float(location.latitude), float(location.longitude)
+
+
+def get_coordinates_full_address(
+    endereco: str, cidade: str, uf: str, cep: str = ""
+) -> tuple[float, float]:
+    """
+    Geocodifica um endereco completo.
+    Tenta: "logradouro, cidade, UF, CEP, Brasil"
+    Fallback: get_coordinates(cidade, uf) se endereco nao resolver.
+    """
+    geolocator = Nominatim(user_agent="rbr_logistica_app", timeout=5)
+    query_parts = [part for part in [endereco, cidade, uf, cep, "Brasil"] if str(part).strip()]
+    query = ", ".join(query_parts)
+    try:
+        resultado = geolocator.geocode(query)
+        time.sleep(0.5)
+        if resultado:
+            return float(resultado.latitude), float(resultado.longitude)
+    except Exception:
+        pass
+    return get_coordinates(cidade, uf)
 
 
 def calculate_distance_km(

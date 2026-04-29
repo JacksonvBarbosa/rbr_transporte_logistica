@@ -18,6 +18,8 @@ class FreightController:
         destination_city: str,
         destination_state: str,
         optimization_mode: str = "cost",
+        origin_coords: tuple[float, float] | None = None,
+        destination_coords: tuple[float, float] | None = None,
     ) -> dict:
         return self.freight_service.simulate(
             origin_city,
@@ -25,6 +27,8 @@ class FreightController:
             destination_city,
             destination_state,
             optimization_mode,
+            origin_coords=origin_coords,
+            destination_coords=destination_coords,
         )
 
     def simulate_multi_leg(
@@ -36,6 +40,8 @@ class FreightController:
         partner_ids: list[int] | None = None,
         segment_pickup_modes: list[str] | None = None,
         optimization_mode: str = "cost",
+        origin_coords: tuple[float, float] | None = None,
+        destination_coords: tuple[float, float] | None = None,
     ) -> dict:
         return self.freight_service.simulate_multi_leg(
             origin_city,
@@ -45,6 +51,8 @@ class FreightController:
             partner_ids,
             segment_pickup_modes,
             optimization_mode,
+            origin_coords=origin_coords,
+            destination_coords=destination_coords,
         )
 
     def ingest_file(self, filename: str, file_bytes: bytes):

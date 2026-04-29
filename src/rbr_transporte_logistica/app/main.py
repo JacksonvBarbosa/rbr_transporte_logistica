@@ -3,6 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from rbr_transporte_logistica.app.pages import (
+    clientes,
     dashboard,
     mapa,
     orcamento,
@@ -23,6 +24,7 @@ st.set_page_config(
 PAGES = {
     "Dashboard": dashboard.render,
     "Parceiros": parceiro_crud.render,
+    "Clientes": clientes.render,
     "Simulação": simulacao.render,
     "Mapa de Rotas": mapa.render,
     "Orçamentos": orcamento.render,

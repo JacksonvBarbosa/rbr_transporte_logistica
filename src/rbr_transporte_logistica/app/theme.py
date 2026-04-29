@@ -12,16 +12,6 @@ ROXO = "#533AB7"
 VERMELHO = "#A32D2D"
 CINZA_BG = "#F7F9FC"
 
-PAGE_ORDER = [
-    ("Principal", "Dashboard"),
-    ("Principal", "Parceiros"),
-    ("Principal", "Simulação"),
-    ("Principal", "Mapa de Rotas"),
-    ("Documentos", "Orçamentos"),
-    ("Documentos", "Upload de Tabelas"),
-    ("Gestão", "Excluir Parceiro"),
-]
-
 
 def apply_theme() -> None:
     st.markdown(
@@ -34,14 +24,26 @@ def apply_theme() -> None:
         .stApp {{
             background: {CINZA_BG};
         }}
+        /* Oculta APENAS o header, nunca o collapsedControl */
         header[data-testid="stHeader"] {{
             display: none !important;
         }}
+        /* Botão de reabrir sidebar - SEMPRE visível, qualquer estado */
         [data-testid="collapsedControl"] {{
             display: flex !important;
             visibility: visible !important;
             opacity: 1 !important;
+            pointer-events: auto !important;
+            z-index: 999999 !important;
+            position: fixed !important;
+        }}
+        [data-testid="collapsedControl"] svg {{
+            fill: {AZUL_MEDIO} !important;
             color: {AZUL_MEDIO} !important;
+        }}
+        [data-testid="collapsedControl"]:hover {{
+            background: {AZUL_SUAVE} !important;
+            border-radius: 6px !important;
         }}
         section[data-testid="stSidebar"] {{
             background: {AZUL_ESCURO};
@@ -61,33 +63,47 @@ def apply_theme() -> None:
             padding-top: 0.25rem;
             padding-bottom: 0.75rem;
         }}
+        /* Remove gaps extras entre elementos do sidebar */
+        section[data-testid="stSidebar"] .stButton {{
+            margin-bottom: 0 !important;
+            margin-top: 0 !important;
+            padding: 0 !important;
+            line-height: 1 !important;
+        }}
+        section[data-testid="stSidebar"] .element-container {{
+            margin-bottom: 0 !important;
+            margin-top: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+        }}
+        section[data-testid="stSidebar"] .block-container {{
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            gap: 0 !important;
+        }}
+        section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{
+            gap: 0 !important;
+        }}
+        /* Esconde o texto duplicado do botão invisível de navegação,
+           mantendo apenas o div estilizado acima */
         section[data-testid="stSidebar"] .stButton > button {{
-            background: transparent !important;
+            position: relative !important;
+            margin-top: -36px !important;
+            height: 36px !important;
+            opacity: 0 !important;
+            width: 100% !important;
+            cursor: pointer !important;
+            z-index: 10 !important;
+            padding: 0 !important;
+            min-height: 36px !important;
             border: none !important;
             box-shadow: none !important;
-            color: #85B7EB !important;
-            text-align: left !important;
-            width: 100% !important;
-            padding: 8px 10px !important;
-            border-radius: 6px !important;
-            font-size: 12px !important;
-            font-weight: 400 !important;
+            background: transparent !important;
+            color: transparent !important;
         }}
-        section[data-testid="stSidebar"] .stButton > button:hover {{
-            background: rgba(55,138,221,0.15) !important;
-            color: #ffffff !important;
-        }}
-        section[data-testid="stSidebar"] .stButton > button[data-active="true"],
-        section[data-testid="stSidebar"] .nav-active button {{
-            background: rgba(55,138,221,0.22) !important;
-            color: #ffffff !important;
-            font-weight: 500 !important;
-        }}
-        section[data-testid="stSidebar"] .nav-danger button {{
-            color: #F09595 !important;
-        }}
-        section[data-testid="stSidebar"] .nav-danger button:hover {{
-            background: rgba(242,117,117,0.12) !important;
+        section[data-testid="stSidebar"] .stButton > button:focus {{
+            outline: none !important;
+            box-shadow: none !important;
         }}
         .block-container {{
             padding-top: 1.25rem;
@@ -125,29 +141,20 @@ def apply_theme() -> None:
             font-size: 12px;
             font-weight: 600;
         }}
-        .stButton > button, .stDownloadButton > button {{
+        div[data-testid="stAppViewContainer"] > section:not([data-testid="stSidebar"]) .stButton > button,
+        div[data-testid="stAppViewContainer"] > section:not([data-testid="stSidebar"]) .stDownloadButton > button {{
             background: {AZUL_MEDIO};
             color: white;
             border: 1px solid {AZUL_MEDIO};
             border-radius: 7px;
         }}
-        .stButton > button[kind="secondary"] {{
+        div[data-testid="stAppViewContainer"] > section:not([data-testid="stSidebar"]) .stButton > button[kind="secondary"] {{
             background: white;
             color: {AZUL_MEDIO};
         }}
         .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"], .stMultiSelect div[data-baseweb="select"] {{
             border-radius: 6px !important;
             background: {CINZA_BG};
-        }}
-        .rbr-nav-title {{
-            color: #A9C8EA;
-            font-size: 12px;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-            margin-top: 10px;
-            margin-bottom: 4px;
-            font-weight: 700;
-            padding: 0 10px;
         }}
         </style>
         """,
@@ -177,26 +184,70 @@ def sidebar_nav(current_page: str) -> None:
         unsafe_allow_html=True,
     )
 
-    with st.sidebar:
-        current_section = None
-        for section, page in PAGE_ORDER:
-            if section != current_section:
-                st.markdown(f'<div class="rbr-nav-title">{section}</div>', unsafe_allow_html=True)
-                current_section = section
+    pages = [
+        ("Principal", [
+            ("📊", "Dashboard"),
+            ("👥", "Parceiros"),
+            ("👤", "Clientes"),
+            ("⭐", "Simulação"),
+            ("🗺️", "Mapa de Rotas"),
+        ]),
+        ("Documentos", [
+            ("📄", "Orçamentos"),
+            ("📤", "Upload de Tabelas"),
+        ]),
+        ("Gestão", [
+            ("❌", "Excluir Parceiro"),
+        ]),
+    ]
 
-            wrapper_classes: list[str] = []
-            if page == current_page:
-                wrapper_classes.append("nav-active")
-            if page == "Excluir Parceiro":
-                wrapper_classes.append("nav-danger")
+    for group_label, items in pages:
+        st.sidebar.markdown(
+            f'<div style="font-size:9px;color:#378ADD;padding:10px 8px 3px;'
+            f'letter-spacing:0.1em;text-transform:uppercase;">{group_label}</div>',
+            unsafe_allow_html=True,
+        )
+        for icon, page_name in items:
+            is_active = current_page == page_name
+            is_danger = page_name == "Excluir Parceiro"
 
-            if wrapper_classes:
-                st.markdown(
-                    f"<div class=\"{' '.join(wrapper_classes)}\">",
-                    unsafe_allow_html=True,
-                )
-            if st.button(page, key=f"nav_{page}", use_container_width=True):
-                st.session_state["current_page"] = page
+            if is_active:
+                bg = "rgba(55,138,221,0.25)"
+                color = "#ffffff"
+                weight = "600"
+            elif is_danger:
+                bg = "transparent"
+                color = "#F09595"
+                weight = "400"
+            else:
+                bg = "transparent"
+                color = "#85B7EB"
+                weight = "400"
+
+            st.sidebar.markdown(
+                f"""
+<div style="
+    background:{bg};
+    border-radius:6px;
+    margin-bottom:2px;
+    padding:8px 10px;
+    display:flex;
+    align-items:center;
+    gap:9px;
+    cursor:pointer;
+    font-size:12px;
+    font-weight:{weight};
+    color:{color};
+">
+    <span>{icon}</span><span>{page_name}</span>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+            if st.sidebar.button(
+                page_name,
+                key=f"nav_{page_name}",
+                use_container_width=True,
+            ):
+                st.session_state["current_page"] = page_name
                 st.rerun()
-            if wrapper_classes:
-                st.markdown("</div>", unsafe_allow_html=True)

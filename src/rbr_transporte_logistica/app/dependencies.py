@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from rbr_transporte_logistica.controllers.freight_controller import FreightController
 from rbr_transporte_logistica.controllers.partner_controller import PartnerController
 from rbr_transporte_logistica.controllers.quote_controller import QuoteController
+from rbr_transporte_logistica.repositories.cliente_repository import ClienteRepository
 from rbr_transporte_logistica.repositories.freight_repository import FreightRepository
 from rbr_transporte_logistica.repositories.partner_repository import PartnerRepository
 from rbr_transporte_logistica.services.etl_service import ETLService
@@ -31,3 +32,7 @@ def build_freight_controller(session: Session) -> FreightController:
 
 def build_quote_controller() -> QuoteController:
     return QuoteController(QuoteService())
+
+
+def build_cliente_repository(session: Session) -> ClienteRepository:
+    return ClienteRepository(session)
